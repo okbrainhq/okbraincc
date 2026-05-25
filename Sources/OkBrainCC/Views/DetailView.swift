@@ -20,6 +20,10 @@ struct DetailView: View {
       switch section {
       case .startOKRun:
         StartOKRunView()
+      case .backupProdbox:
+        BackupAgentView(definition: .prodbox)
+      case .backupSandbox:
+        BackupAgentView(definition: .prodboxSandbox)
       }
 
       Spacer()

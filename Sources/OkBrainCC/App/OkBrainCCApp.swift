@@ -6,6 +6,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
     OKRunLauncher.launchConfiguredAppIfNeeded()
+    Task { @MainActor in
+      BackupAgentStore.shared.startScheduler()
+    }
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

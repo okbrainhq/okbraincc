@@ -17,6 +17,10 @@ open_app() {
   /usr/bin/open -n "$APP_BUNDLE"
 }
 
+open_mock_app() {
+  /usr/bin/open -n "$APP_BUNDLE" --args --mock-backups
+}
+
 case "$MODE" in
   run)
     open_app
@@ -37,8 +41,16 @@ case "$MODE" in
     sleep 1
     pgrep -x "$APP_NAME" >/dev/null
     ;;
+  --mock|mock)
+    open_mock_app
+    ;;
+  --mock-verify|mock-verify)
+    open_mock_app
+    sleep 1
+    pgrep -x "$APP_NAME" >/dev/null
+    ;;
   *)
-    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify|--mock|--mock-verify]" >&2
     exit 2
     ;;
 esac
