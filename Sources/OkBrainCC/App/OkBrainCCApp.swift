@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
+    OKRunLauncher.launchConfiguredAppIfNeeded()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -17,7 +18,7 @@ struct OkBrainCCApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
   var body: some Scene {
-    WindowGroup("OkBrainCC", id: WindowID.main) {
+    Window("OkBrainCC", id: WindowID.main) {
       ContentView()
         .frame(minWidth: 760, minHeight: 480)
     }

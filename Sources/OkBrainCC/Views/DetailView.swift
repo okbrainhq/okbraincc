@@ -17,10 +17,10 @@ struct DetailView: View {
 
       Divider()
 
-      Text(section.summary)
-        .font(.title3)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+      switch section {
+      case .startOKRun:
+        StartOKRunView()
+      }
 
       Spacer()
     }

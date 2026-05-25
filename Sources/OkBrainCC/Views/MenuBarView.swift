@@ -5,7 +5,7 @@ struct MenuBarView: View {
   @Environment(\.openWindow) private var openWindow
 
   var body: some View {
-    Button("Open Window") {
+    Button("Show Window") {
       openWindow(id: WindowID.main)
       NSApp.setActivationPolicy(.regular)
       NSApp.activate(ignoringOtherApps: true)
