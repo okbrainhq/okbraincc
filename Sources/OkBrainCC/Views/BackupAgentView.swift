@@ -18,6 +18,10 @@ struct BackupAgentView: View {
     store.activeRunID(for: definition.id) != nil
   }
 
+  private var isLoading: Bool {
+    store.loadingSystemIDs.contains(definition.id)
+  }
+
   private var selectedItem: BackupListItem? {
     backupItems.first { $0.id == selectedItemID }
   }
@@ -91,7 +95,7 @@ struct BackupAgentView: View {
       if restoreOptionID.isEmpty {
         restoreOptionID = definition.restoreOptions[0].id
       }
-      store.refreshStatuses()
+      store.loadBackupData(systemID: definition.id)
       ensureSelection()
     }
     .onChange(of: backupItems) {
@@ -168,7 +172,7 @@ struct BackupAgentView: View {
         .accessibilityLabel("Settings")
 
         Button {
-          store.refreshStatuses()
+          store.loadBackupData(systemID: definition.id, force: true)
         } label: {
           Image(systemName: "arrow.clockwise")
         }
@@ -186,6 +190,16 @@ struct BackupAgentView: View {
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
+
+      if isLoading {
+        HStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Loading backup metadata...")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+      }
     }
     .sheet(isPresented: $isShowingSettings) {
       BackupSettingsView(definition: definition, store: store)
@@ -211,14 +225,25 @@ struct BackupAgentView: View {
       Text("Available Backups")
         .font(.headline)
 
-      List(selection: $selectedItemID) {
-        ForEach(backupItems) { item in
-          BackupListRow(item: item)
-            .tag(item.id)
+      if isLoading && backupItems.isEmpty {
+        VStack(spacing: 8) {
+          ProgressView()
+            .controlSize(.small)
+          Text("Loading")
+            .foregroundStyle(.secondary)
         }
+        .frame(maxWidth: .infinity, minHeight: 220)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+      } else {
+        List(selection: $selectedItemID) {
+          ForEach(backupItems) { item in
+            BackupListRow(item: item)
+              .tag(item.id)
+          }
+        }
+        .frame(minHeight: 220, idealHeight: 320, maxHeight: 420)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
       }
-      .frame(minHeight: 220, idealHeight: 320, maxHeight: 420)
-      .clipShape(RoundedRectangle(cornerRadius: 8))
     }
   }
 
@@ -273,8 +298,17 @@ struct BackupAgentView: View {
         }
       }
     } else {
-      ContentUnavailableView("No Backups", systemImage: "externaldrive.badge.questionmark")
+      if isLoading {
+        VStack(spacing: 8) {
+          ProgressView()
+          Text("Loading latest backup details...")
+            .foregroundStyle(.secondary)
+        }
         .frame(maxWidth: .infinity, minHeight: 320)
+      } else {
+        ContentUnavailableView("No Backups", systemImage: "externaldrive.badge.questionmark")
+          .frame(maxWidth: .infinity, minHeight: 320)
+      }
     }
   }
 

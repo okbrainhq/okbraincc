@@ -10,6 +10,8 @@ final class BackupAgentStore: ObservableObject {
   @Published private(set) var statuses: [BackupSystemID: BackupSystemStatus] = [:]
   @Published private(set) var activeRuns: [BackupSystemID: BackupRun.ID] = [:]
   @Published private(set) var schedules: [BackupSystemID: BackupScheduleSettings] = [:]
+  @Published private(set) var restoreDates: [BackupSystemID: [String]] = [:]
+  @Published private(set) var loadingSystemIDs = Set<BackupSystemID>()
 
   private let historyURL: URL
   private let defaults = UserDefaults.standard
@@ -17,6 +19,7 @@ final class BackupAgentStore: ObservableObject {
   private var scheduler: Timer?
   private var activeProcesses: [BackupRun.ID: Process] = [:]
   private var stoppedRunIDs = Set<BackupRun.ID>()
+  private var hasLoadedRunHistory = false
 
   private init() {
     let supportDirectory = FileManager.default
@@ -25,13 +28,16 @@ final class BackupAgentStore: ObservableObject {
     historyURL = supportDirectory.appendingPathComponent("run-history.json", isDirectory: false)
     isMockMode = Self.detectMockMode()
     schedules = Self.loadSchedules(defaults: defaults)
-    runs = isMockMode ? Self.mockRuns() : Self.loadRuns(from: historyURL)
+    runs = isMockMode ? Self.mockRuns() : []
+    restoreDates = isMockMode ? Self.mockRestoreDates() : [:]
     if isMockMode {
       activeRuns = Dictionary(uniqueKeysWithValues: runs.compactMap { run in
         run.status == .running ? (run.systemID, run.id) : nil
       })
+      for definition in BackupSystemDefinition.all {
+        statuses[definition.id] = Self.mockStatus(for: definition)
+      }
     }
-    refreshStatuses()
   }
 
   func startScheduler() {
@@ -39,7 +45,6 @@ final class BackupAgentStore: ObservableObject {
       return
     }
 
-    refreshStatuses()
     evaluateAutomaticBackups()
 
     let timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -52,12 +57,53 @@ final class BackupAgentStore: ObservableObject {
   }
 
   func refreshStatuses() {
-    var nextStatuses: [BackupSystemID: BackupSystemStatus] = [:]
     for definition in BackupSystemDefinition.all {
-      nextStatuses[definition.id] = buildStatus(for: definition)
+      loadBackupData(systemID: definition.id, force: true)
     }
-    importObservedRuns(from: nextStatuses)
-    statuses = nextStatuses
+  }
+
+  func loadBackupData(systemID: BackupSystemID, force: Bool = false) {
+    if isMockMode {
+      let definition = BackupSystemDefinition.definition(for: systemID)
+      statuses[systemID] = Self.mockStatus(for: definition)
+      restoreDates[systemID] = Self.mockRestoreDates()[systemID] ?? []
+      return
+    }
+
+    if loadingSystemIDs.contains(systemID), !force {
+      return
+    }
+
+    loadingSystemIDs.insert(systemID)
+
+    let definition = BackupSystemDefinition.definition(for: systemID)
+    let shouldLoadRunHistory = !hasLoadedRunHistory
+    if shouldLoadRunHistory {
+      hasLoadedRunHistory = true
+    }
+    let historyURLForLoad = shouldLoadRunHistory ? historyURL : nil
+
+    Task.detached(priority: .utility) { [definition, historyURLForLoad, systemID] in
+      let pageData = BackupFilesystemLoader.loadPageData(for: definition, historyURL: historyURLForLoad)
+
+      await MainActor.run {
+        BackupAgentStore.shared.applyLoadedPageData(pageData, systemID: systemID)
+      }
+    }
+  }
+
+  private func applyLoadedPageData(_ pageData: BackupPageData, systemID: BackupSystemID) {
+    if let loadedRuns = pageData.runs {
+      let activeRuns = runs.filter(\.isRunning)
+      let activeRunIDs = Set(activeRuns.map(\.id))
+      runs = (activeRuns + loadedRuns.filter { !activeRunIDs.contains($0.id) })
+        .sorted { $0.startedAt > $1.startedAt }
+    }
+
+    restoreDates[systemID] = pageData.restoreDates
+    statuses[systemID] = pageData.status
+    importObservedRuns(from: [systemID: pageData.status])
+    loadingSystemIDs.remove(systemID)
   }
 
   func status(for systemID: BackupSystemID) -> BackupSystemStatus? {
@@ -173,29 +219,7 @@ final class BackupAgentStore: ObservableObject {
   }
 
   func availableRestoreDates(for systemID: BackupSystemID) -> [String] {
-    if isMockMode {
-      return ["2026-05-25", "2026-05-24", "2026-05-23"]
-    }
-
-    let definition = BackupSystemDefinition.definition(for: systemID)
-    var dates = Set<String>()
-
-    for component in definition.components {
-      let componentURL = definition.backupDirectoryURL.appendingPathComponent(component.relativePath, isDirectory: true)
-
-      switch component.kind {
-      case .directory:
-        for name in directorySnapshotNames(in: componentURL) {
-          dates.insert(name)
-        }
-      case .database(let prefix, let suffix):
-        for name in databaseSnapshotNames(in: componentURL, prefix: prefix, suffix: suffix) {
-          dates.insert(name)
-        }
-      }
-    }
-
-    return dates.sorted(by: >)
+    restoreDates[systemID] ?? []
   }
 
   func logText(for runID: BackupRun.ID?, systemID: BackupSystemID) -> String {
@@ -238,8 +262,6 @@ final class BackupAgentStore: ObservableObject {
   }
 
   private func evaluateAutomaticBackups() {
-    refreshStatuses()
-
     let now = Date()
     let today = Self.dayFormatter.string(from: now)
     let currentTime = Calendar.current.dateComponents([.hour, .minute], from: now)
@@ -261,11 +283,6 @@ final class BackupAgentStore: ObservableObject {
 
       let attemptKey = "backupAgent.lastAutomaticAttempt.\(definition.id.rawValue)"
       guard defaults.string(forKey: attemptKey) != today else {
-        continue
-      }
-
-      if statuses[definition.id]?.requiredComponentsAreCurrent == true {
-        defaults.set(today, forKey: attemptKey)
         continue
       }
 
@@ -379,11 +396,12 @@ final class BackupAgentStore: ObservableObject {
     runs[index].exitCode = exitCode
     runs[index].finishedAt = Date()
     runs[index].log.append(finalMessage)
-    activeRuns[runs[index].systemID] = nil
+    let systemID = runs[index].systemID
+    activeRuns[systemID] = nil
     activeProcesses[runID] = nil
     stoppedRunIDs.remove(runID)
 
-    refreshStatuses()
+    loadBackupData(systemID: systemID, force: true)
     saveRuns()
   }
 
@@ -848,6 +866,13 @@ final class BackupAgentStore: ObservableObject {
         log: "[2026-05-25 03:45:00] === Prodbox sandbox backup started ===\n[2026-05-25 03:46:10] apps backup saved\n[2026-05-25 03:47:12] === Prodbox sandbox backup completed ===\n"
       )
     ].sorted { $0.startedAt > $1.startedAt }
+  }
+
+  private static func mockRestoreDates() -> [BackupSystemID: [String]] {
+    [
+      .prodbox: ["2026-05-25", "2026-05-24", "2026-05-23"],
+      .prodboxSandbox: ["2026-05-25", "2026-05-24", "2026-05-23"]
+    ]
   }
 
   private static func mockStatus(for definition: BackupSystemDefinition) -> BackupSystemStatus {
