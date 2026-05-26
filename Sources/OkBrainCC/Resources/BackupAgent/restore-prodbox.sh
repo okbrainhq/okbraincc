@@ -2,14 +2,17 @@
 set -euo pipefail
 
 REMOTE_HOST="arunoda@prodbox.local"
-BACKUP_DIR="$HOME/prodbox-backups"
+BACKUP_ROOT="$HOME/okbraincc-backups/prodbox"
+RUNS_DIR="$BACKUP_ROOT/runs"
 REMOTE_DB="/var/www/brain/brain.db"
 REMOTE_DATA="/var/www/brain-data/"
 REMOTE_UPLOADS="/var/www/brain-data/uploads/"
-REMOTE_SANDBOX="/home/brain-sandbox/apps/"
+REMOTE_SANDBOX_APPS="/home/brain-sandbox/apps/"
+REMOTE_SANDBOX_SKILLS="/home/brain-sandbox/skills/"
+REMOTE_SANDBOX_IMAGES="/home/brain-sandbox/upload_images/"
 APP_NAME="brain"
 
-DATE="latest"
+RUN_ID=""
 FILTER=""
 ASSUME_YES="0"
 
@@ -18,52 +21,80 @@ for arg in "$@"; do
     --yes)
       ASSUME_YES="1"
       ;;
-    --db-only|--data-only|--uploads-only|--sandbox-only)
+    --db-only|--data-only|--uploads-only|--sandbox-only|--sandbox-skills-only|--sandbox-images-only)
       FILTER="$arg"
       ;;
     *)
-      DATE="$arg"
+      RUN_ID="$arg"
       ;;
   esac
 done
 
-if [ "$DATE" = "latest" ]; then
-  if [ -L "$BACKUP_DIR/brain-data/latest" ]; then
-    DATE="$(readlink "$BACKUP_DIR/brain-data/latest")"
-  else
-    echo "Error: No 'latest' symlink found. Specify a date."
+resolve_run_dir() {
+  if [ -z "$RUN_ID" ]; then
+    if [ ! -d "$RUNS_DIR" ]; then
+      echo "Error: No backup runs found. Specify a run id."
+      exit 1
+    fi
+
+    RUN_ID="$(find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; | sort -r | sed -n '1p')"
+    if [ -z "$RUN_ID" ]; then
+      echo "Error: No backup runs found. Specify a run id."
+      exit 1
+    fi
+  fi
+
+  RUN_DIR="$RUNS_DIR/$RUN_ID"
+
+  if [ ! -d "$RUN_DIR" ]; then
+    echo "Error: Backup run not found: $RUN_DIR"
+    echo ""
+    echo "Available backup runs:"
+    find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; 2>/dev/null | sort -r | head -20 || true
     exit 1
   fi
-fi
 
-DB_FILE="$BACKUP_DIR/db/brain-$DATE.db"
-DATA_DIR="$BACKUP_DIR/brain-data/$DATE"
-UPLOADS_DIR="$BACKUP_DIR/brain-uploads/$DATE"
-SANDBOX_DIR="$BACKUP_DIR/brain-sandbox/$DATE"
+  RUN_ID="$(basename "$RUN_DIR")"
+}
+
+selected() {
+  [ -z "$FILTER" ] || [ "$FILTER" = "$1" ]
+}
+
+resolve_run_dir
+
+DATA_ROOT="$RUN_DIR/data"
+DB_FILE="$DATA_ROOT/db/brain.db"
+DATA_DIR="$DATA_ROOT/brain-data"
+UPLOADS_DIR="$DATA_ROOT/brain-uploads"
+SANDBOX_APPS_DIR="$DATA_ROOT/brain-sandbox/apps"
+SANDBOX_SKILLS_DIR="$DATA_ROOT/brain-sandbox/skills"
+SANDBOX_IMAGES_DIR="$DATA_ROOT/brain-sandbox/upload-images"
 
 MISSING=()
-[ ! -f "$DB_FILE" ] && MISSING+=("db: $DB_FILE")
-[ ! -d "$DATA_DIR" ] && MISSING+=("brain-data: $DATA_DIR")
-[ ! -d "$UPLOADS_DIR" ] && MISSING+=("brain-uploads: $UPLOADS_DIR")
-[ ! -d "$SANDBOX_DIR" ] && MISSING+=("brain-sandbox: $SANDBOX_DIR")
+if selected "--db-only" && [ ! -f "$DB_FILE" ]; then MISSING+=("database: $DB_FILE"); fi
+if selected "--data-only" && [ ! -d "$DATA_DIR" ]; then MISSING+=("brain-data: $DATA_DIR"); fi
+if selected "--uploads-only" && [ ! -d "$UPLOADS_DIR" ]; then MISSING+=("brain-uploads: $UPLOADS_DIR"); fi
+if [ "$FILTER" = "--sandbox-only" ] && [ ! -d "$SANDBOX_APPS_DIR" ]; then MISSING+=("sandbox apps: $SANDBOX_APPS_DIR"); fi
+if [ "$FILTER" = "--sandbox-skills-only" ] && [ ! -d "$SANDBOX_SKILLS_DIR" ]; then MISSING+=("sandbox skills: $SANDBOX_SKILLS_DIR"); fi
+if [ "$FILTER" = "--sandbox-images-only" ] && [ ! -d "$SANDBOX_IMAGES_DIR" ]; then MISSING+=("sandbox images: $SANDBOX_IMAGES_DIR"); fi
 
-if [ "${#MISSING[@]}" -gt 0 ] && [ -z "$FILTER" ]; then
-  echo "Error: Missing backup components for $DATE:"
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  echo "Error: Missing backup components for $RUN_ID:"
   for item in "${MISSING[@]}"; do
     echo "  - $item"
   done
-  echo ""
-  echo "Available database backups:"
-  ls "$BACKUP_DIR/db/" 2>/dev/null | sed 's/brain-//;s/.db//' | sort || true
   exit 1
 fi
 
-echo "=== Restore from $DATE ==="
+echo "=== Restore from $RUN_ID ==="
 echo "This will restore to $REMOTE_HOST:"
-if [ -z "$FILTER" ] || [ "$FILTER" = "--db-only" ]; then echo "  - Database: $DB_FILE -> $REMOTE_DB"; fi
-if [ -z "$FILTER" ] || [ "$FILTER" = "--data-only" ]; then echo "  - brain-data: $DATA_DIR/ -> $REMOTE_DATA"; fi
-if [ -z "$FILTER" ] || [ "$FILTER" = "--uploads-only" ]; then echo "  - brain-uploads: $UPLOADS_DIR/ -> $REMOTE_UPLOADS"; fi
-if [ -z "$FILTER" ] || [ "$FILTER" = "--sandbox-only" ]; then echo "  - brain-sandbox/apps: $SANDBOX_DIR/ -> $REMOTE_SANDBOX"; fi
+if selected "--db-only"; then echo "  - Database: $DB_FILE -> $REMOTE_DB"; fi
+if selected "--data-only"; then echo "  - brain-data: $DATA_DIR/ -> $REMOTE_DATA"; fi
+if selected "--uploads-only"; then echo "  - brain-uploads: $UPLOADS_DIR/ -> $REMOTE_UPLOADS"; fi
+if selected "--sandbox-only"; then echo "  - brain-sandbox/apps: $SANDBOX_APPS_DIR/ -> $REMOTE_SANDBOX_APPS"; fi
+if selected "--sandbox-skills-only"; then echo "  - brain-sandbox/skills: $SANDBOX_SKILLS_DIR/ -> $REMOTE_SANDBOX_SKILLS"; fi
+if selected "--sandbox-images-only"; then echo "  - brain-sandbox/upload_images: $SANDBOX_IMAGES_DIR/ -> $REMOTE_SANDBOX_IMAGES"; fi
 
 if [ "$ASSUME_YES" != "1" ]; then
   echo ""
@@ -79,11 +110,38 @@ if [ "$ASSUME_YES" != "1" ]; then
   esac
 fi
 
+restore_directory() {
+  local title="$1"
+  local source_dir="$2"
+  local destination="$3"
+  local rsync_path="${4:-}"
+  local chown_target="${5:-}"
+
+  if [ ! -d "$source_dir" ]; then
+    echo "Skipping $title restore: $source_dir not found"
+    return
+  fi
+
+  local args=(-az --delete)
+  if [ -n "$rsync_path" ]; then
+    args+=(--rsync-path="$rsync_path")
+  fi
+
+  echo "Restoring $title..."
+  rsync "${args[@]}" "$source_dir/" "$REMOTE_HOST:$destination"
+
+  if [ -n "$chown_target" ]; then
+    ssh "$REMOTE_HOST" "sudo chown -R brain-sandbox:brain-sandbox '$chown_target'"
+  fi
+
+  echo "$title restored."
+}
+
 echo ""
 echo "Stopping brain app on remote..."
 ssh "$REMOTE_HOST" "sudo systemctl stop $APP_NAME"
 
-if [ -z "$FILTER" ] || [ "$FILTER" = "--db-only" ]; then
+if selected "--db-only"; then
   if [ ! -f "$DB_FILE" ]; then
     echo "Skipping DB restore: $DB_FILE not found"
   else
@@ -94,37 +152,24 @@ if [ -z "$FILTER" ] || [ "$FILTER" = "--db-only" ]; then
   fi
 fi
 
-if [ -z "$FILTER" ] || [ "$FILTER" = "--data-only" ]; then
-  if [ ! -d "$DATA_DIR" ]; then
-    echo "Skipping brain-data restore: $DATA_DIR not found"
-  else
-    echo "Restoring brain-data..."
-    rsync -az --delete "$DATA_DIR/" "$REMOTE_HOST:$REMOTE_DATA"
-    echo "brain-data restored."
-  fi
+if selected "--data-only"; then
+  restore_directory "brain-data" "$DATA_DIR" "$REMOTE_DATA"
 fi
 
-if [ -z "$FILTER" ] || [ "$FILTER" = "--uploads-only" ]; then
-  if [ ! -d "$UPLOADS_DIR" ]; then
-    echo "Skipping brain-uploads restore: $UPLOADS_DIR not found"
-  else
-    echo "Restoring brain-uploads..."
-    rsync -az --delete "$UPLOADS_DIR/" "$REMOTE_HOST:$REMOTE_UPLOADS"
-    echo "brain-uploads restored."
-  fi
+if selected "--uploads-only"; then
+  restore_directory "brain-uploads" "$UPLOADS_DIR" "$REMOTE_UPLOADS"
 fi
 
-if [ -z "$FILTER" ] || [ "$FILTER" = "--sandbox-only" ]; then
-  if [ ! -d "$SANDBOX_DIR" ]; then
-    echo "Skipping brain-sandbox restore: $SANDBOX_DIR not found"
-  elif ! ssh "$REMOTE_HOST" "test -d /home/brain-sandbox" 2>/dev/null; then
-    echo "Skipping brain-sandbox restore: /home/brain-sandbox not found on remote"
-  else
-    echo "Restoring brain-sandbox/apps..."
-    rsync -az --delete --rsync-path="sudo rsync" "$SANDBOX_DIR/" "$REMOTE_HOST:$REMOTE_SANDBOX"
-    ssh "$REMOTE_HOST" "sudo chown -R brain-sandbox:brain-sandbox /home/brain-sandbox/apps/"
-    echo "brain-sandbox/apps restored."
-  fi
+if selected "--sandbox-only"; then
+  restore_directory "brain-sandbox/apps" "$SANDBOX_APPS_DIR" "$REMOTE_SANDBOX_APPS" "sudo rsync" "/home/brain-sandbox/apps/"
+fi
+
+if selected "--sandbox-skills-only"; then
+  restore_directory "brain-sandbox/skills" "$SANDBOX_SKILLS_DIR" "$REMOTE_SANDBOX_SKILLS" "sudo rsync" "/home/brain-sandbox/skills/"
+fi
+
+if selected "--sandbox-images-only"; then
+  restore_directory "brain-sandbox/upload_images" "$SANDBOX_IMAGES_DIR" "$REMOTE_SANDBOX_IMAGES" "sudo rsync" "/home/brain-sandbox/upload_images/"
 fi
 
 echo ""

@@ -123,7 +123,7 @@ extension BackupSystemDefinition {
     subtitle: "prodbox.local",
     systemImage: "server.rack",
     remoteHost: "arunoda@prodbox.local",
-    backupDirectoryName: "prodbox-backups",
+    backupDirectoryName: "okbraincc-backups/prodbox",
     backupScriptName: "backup-prodbox.sh",
     restoreScriptName: "restore-prodbox.sh",
     scheduleHour: 3,
@@ -132,42 +132,42 @@ extension BackupSystemDefinition {
       BackupComponentDefinition(
         id: "db",
         title: "Database",
-        relativePath: "db",
+        relativePath: "data/db/brain.db",
         kind: .database(prefix: "brain-", suffix: ".db"),
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "brain-data",
         title: "Brain Data",
-        relativePath: "brain-data",
+        relativePath: "data/brain-data",
         kind: .directory,
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "brain-uploads",
         title: "Brain Uploads",
-        relativePath: "brain-uploads",
+        relativePath: "data/brain-uploads",
         kind: .directory,
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "brain-sandbox",
         title: "Sandbox Apps",
-        relativePath: "brain-sandbox",
+        relativePath: "data/brain-sandbox/apps",
         kind: .directory,
         isRequired: false
       ),
       BackupComponentDefinition(
         id: "brain-sandbox-skills",
         title: "Sandbox Skills",
-        relativePath: "brain-sandbox-skills",
+        relativePath: "data/brain-sandbox/skills",
         kind: .directory,
         isRequired: false
       ),
       BackupComponentDefinition(
         id: "brain-sandbox-upload-images",
         title: "Sandbox Images",
-        relativePath: "brain-sandbox-upload-images",
+        relativePath: "data/brain-sandbox/upload-images",
         kind: .directory,
         isRequired: false
       )
@@ -177,7 +177,9 @@ extension BackupSystemDefinition {
       BackupRestoreOption(id: "db", title: "Database", argument: "--db-only"),
       BackupRestoreOption(id: "data", title: "Brain Data", argument: "--data-only"),
       BackupRestoreOption(id: "uploads", title: "Brain Uploads", argument: "--uploads-only"),
-      BackupRestoreOption(id: "sandbox", title: "Sandbox Apps", argument: "--sandbox-only")
+      BackupRestoreOption(id: "sandbox", title: "Sandbox Apps", argument: "--sandbox-only"),
+      BackupRestoreOption(id: "sandbox-skills", title: "Sandbox Skills", argument: "--sandbox-skills-only"),
+      BackupRestoreOption(id: "sandbox-images", title: "Sandbox Images", argument: "--sandbox-images-only")
     ]
   )
 
@@ -187,7 +189,7 @@ extension BackupSystemDefinition {
     subtitle: "prodbox-sandbox.local",
     systemImage: "shippingbox",
     remoteHost: "arunoda@prodbox-sandbox.local",
-    backupDirectoryName: "prodbox-sandbox-backups",
+    backupDirectoryName: "okbraincc-backups/prodbox-sandbox",
     backupScriptName: "backup-prodbox-sandbox.sh",
     restoreScriptName: "restore-prodbox-sandbox.sh",
     scheduleHour: 3,
@@ -196,34 +198,38 @@ extension BackupSystemDefinition {
       BackupComponentDefinition(
         id: "apps",
         title: "Apps",
-        relativePath: "apps",
+        relativePath: "data/apps",
         kind: .directory,
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "upload_images",
         title: "Upload Images",
-        relativePath: "upload_images",
+        relativePath: "data/upload-images",
         kind: .directory,
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "skills",
         title: "Skills",
-        relativePath: "skills",
+        relativePath: "data/skills",
         kind: .directory,
         isRequired: true
       ),
       BackupComponentDefinition(
         id: "brain-data",
         title: "Brain Data",
-        relativePath: "brain-data",
+        relativePath: "data/brain-data",
         kind: .directory,
         isRequired: true
       )
     ],
     restoreOptions: [
-      BackupRestoreOption(id: "apps", title: "Apps", argument: "--apps-only")
+      BackupRestoreOption(id: "full", title: "Full Restore", argument: nil),
+      BackupRestoreOption(id: "apps", title: "Apps", argument: "--apps-only"),
+      BackupRestoreOption(id: "upload-images", title: "Upload Images", argument: "--images-only"),
+      BackupRestoreOption(id: "skills", title: "Skills", argument: "--skills-only"),
+      BackupRestoreOption(id: "brain-data", title: "Brain Data", argument: "--data-only")
     ]
   )
 }

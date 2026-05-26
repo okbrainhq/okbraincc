@@ -2,20 +2,63 @@
 set -euo pipefail
 
 REMOTE_HOST="arunoda@prodbox.local"
-BACKUP_DIR="$HOME/prodbox-backups"
+BACKUP_ROOT="$HOME/okbraincc-backups/prodbox"
+RUNS_DIR="$BACKUP_ROOT/runs"
 RETENTION_DAYS=30
-LOG_FILE="$BACKUP_DIR/backup.log"
-DATE="$(date +%Y-%m-%d)"
 
-mkdir -p "$BACKUP_DIR/db"
-mkdir -p "$BACKUP_DIR/brain-data"
-mkdir -p "$BACKUP_DIR/brain-uploads"
-mkdir -p "$BACKUP_DIR/brain-sandbox"
-mkdir -p "$BACKUP_DIR/brain-sandbox-skills"
-mkdir -p "$BACKUP_DIR/brain-sandbox-upload-images"
+RUN_ID_BASE="$(date +%Y-%m-%d-%H%M)"
+RUN_ID="${OKBRAINCC_BACKUP_RUN_ID:-$RUN_ID_BASE}"
+if [ -e "$RUNS_DIR/$RUN_ID" ]; then
+  RUN_ID="$RUN_ID_BASE-$(date +%S)"
+fi
+
+RUN_DIR="$RUNS_DIR/$RUN_ID"
+DATA_DIR="$RUN_DIR/data"
+LOG_FILE="$RUN_DIR/backup.log"
+STDOUT_LOG="$RUN_DIR/stdout.log"
+STDERR_LOG="$RUN_DIR/stderr.log"
+METADATA_FILE="$RUN_DIR/metadata.env"
+STATUS="failed"
+STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
+
+mkdir -p "$DATA_DIR/db"
+mkdir -p "$DATA_DIR/brain-data"
+mkdir -p "$DATA_DIR/brain-uploads"
+mkdir -p "$DATA_DIR/brain-sandbox/apps"
+mkdir -p "$DATA_DIR/brain-sandbox/skills"
+mkdir -p "$DATA_DIR/brain-sandbox/upload-images"
+
+write_metadata() {
+  cat >"$METADATA_FILE" <<EOF
+system=prodbox
+run_id=$RUN_ID
+status=$STATUS
+started_at=$STARTED_AT
+finished_at=$(date '+%Y-%m-%d %H:%M:%S')
+remote_host=$REMOTE_HOST
+EOF
+}
+
+finish() {
+  write_metadata
+}
+trap finish EXIT
+
+exec > >(tee -a "$STDOUT_LOG") 2> >(tee -a "$STDERR_LOG" >&2)
 
 log() {
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+previous_component_path() {
+  local component="$1"
+
+  while IFS= read -r previous_run; do
+    if [ -d "$RUNS_DIR/$previous_run/data/$component" ]; then
+      printf '%s' "$RUNS_DIR/$previous_run/data/$component"
+      return
+    fi
+  done < <(find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" ! -name "$RUN_ID" -exec basename {} \; 2>/dev/null | sort -r)
 }
 
 sync_snapshot() {
@@ -24,17 +67,18 @@ sync_snapshot() {
   local local_component="$3"
   local rsync_path="${4:-}"
 
-  local dest="$BACKUP_DIR/$local_component/$DATE"
-  local link_dest="$BACKUP_DIR/$local_component/latest"
-
+  local dest="$DATA_DIR/$local_component"
   mkdir -p "$dest"
 
   local args=(-az --delete)
   if [ -n "$rsync_path" ]; then
     args+=(--rsync-path="$rsync_path")
   fi
-  if [ -d "$link_dest" ]; then
-    log "Syncing $name with link-dest from latest..."
+
+  local link_dest
+  link_dest="$(previous_component_path "$local_component")"
+  if [ -n "$link_dest" ]; then
+    log "Syncing $name with link-dest from previous run..."
     args+=(--link-dest="$link_dest")
   else
     log "Syncing $name (first run, no link-dest)..."
@@ -42,22 +86,14 @@ sync_snapshot() {
 
   rsync "${args[@]}" "$REMOTE_HOST:$remote_path" "$dest/"
   touch "$dest"
-  ln -snf "$DATE" "$BACKUP_DIR/$local_component/latest"
   log "$name backup saved: $dest ($(du -sh "$dest" | cut -f1))"
 }
 
-remove_old_snapshots() {
-  local component="$1"
-  find "$BACKUP_DIR/$component" -maxdepth 1 -mindepth 1 -type d -name "20*" -mtime +"$RETENTION_DAYS" -exec rm -rf {} \; -print | while read -r f; do
-    log "Removed old $component snapshot: $f"
-  done
-}
-
-log "=== Backup started ==="
+log "=== Backup started: $RUN_ID ==="
 
 REMOTE_DB="/var/www/brain/brain.db"
 REMOTE_BACKUP="/tmp/prodbox-backup-$(date +%s).db"
-LOCAL_DB="$BACKUP_DIR/db/brain-$DATE.db"
+LOCAL_DB="$DATA_DIR/db/brain.db"
 
 log "Creating sqlite3 backup on remote..."
 ssh "$REMOTE_HOST" "sqlite3 '$REMOTE_DB' \".backup '$REMOTE_BACKUP'\""
@@ -74,33 +110,27 @@ sync_snapshot "brain-data" "/var/www/brain-data/" "brain-data"
 sync_snapshot "brain-uploads" "/var/www/brain-data/uploads/" "brain-uploads"
 
 if ssh "$REMOTE_HOST" "test -d /home/brain-sandbox/apps" 2>/dev/null; then
-  sync_snapshot "brain-sandbox/apps" "/home/brain-sandbox/apps/" "brain-sandbox" "sudo rsync"
+  sync_snapshot "brain-sandbox/apps" "/home/brain-sandbox/apps/" "brain-sandbox/apps" "sudo rsync"
 else
   log "Skipping brain-sandbox/apps: directory not found on remote"
 fi
 
 if ssh "$REMOTE_HOST" "test -d /home/brain-sandbox/skills" 2>/dev/null; then
-  sync_snapshot "brain-sandbox/skills" "/home/brain-sandbox/skills/" "brain-sandbox-skills" "sudo rsync"
+  sync_snapshot "brain-sandbox/skills" "/home/brain-sandbox/skills/" "brain-sandbox/skills" "sudo rsync"
 else
   log "Skipping brain-sandbox/skills: directory not found on remote"
 fi
 
 if ssh "$REMOTE_HOST" "test -d /home/brain-sandbox/upload_images" 2>/dev/null; then
-  sync_snapshot "brain-sandbox/upload_images" "/home/brain-sandbox/upload_images/" "brain-sandbox-upload-images" "sudo rsync"
+  sync_snapshot "brain-sandbox/upload_images" "/home/brain-sandbox/upload_images/" "brain-sandbox/upload-images" "sudo rsync"
 else
   log "Skipping brain-sandbox/upload_images: directory not found on remote"
 fi
 
-log "Cleaning up backups older than $RETENTION_DAYS days..."
-
-find "$BACKUP_DIR/db" -name "brain-*.db" -mtime +"$RETENTION_DAYS" -delete -print | while read -r f; do
-  log "Removed old db: $f"
+log "Cleaning up runs older than $RETENTION_DAYS days..."
+find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -mtime +"$RETENTION_DAYS" -exec rm -rf {} \; -print | while read -r f; do
+  log "Removed old run: $f"
 done
 
-remove_old_snapshots "brain-data"
-remove_old_snapshots "brain-uploads"
-remove_old_snapshots "brain-sandbox"
-remove_old_snapshots "brain-sandbox-skills"
-remove_old_snapshots "brain-sandbox-upload-images"
-
-log "=== Backup completed ==="
+STATUS="success"
+log "=== Backup completed: $RUN_ID ==="

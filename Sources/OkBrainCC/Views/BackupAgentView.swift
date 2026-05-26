@@ -31,32 +31,32 @@ struct BackupAgentView: View {
   }
 
   private var backupItems: [BackupListItem] {
-    let snapshotDates = Set(store.availableRestoreDates(for: definition.id).filter { $0 != "latest" })
+    let snapshotIDs = Set(store.availableRestoreDates(for: definition.id))
     let runs = store.runs(for: definition.id).filter { $0.operation == .backup }
-    let runDates = Set(runs.map { Self.dayFormatter.string(from: $0.startedAt) })
+    let runBackupIDs = Set(runs.map { Self.runIDFormatter.string(from: $0.startedAt) })
 
     let runItems = runs.map { run in
-      let date = Self.dayFormatter.string(from: run.startedAt)
+      let backupID = Self.runIDFormatter.string(from: run.startedAt)
       return BackupListItem(
         id: "run-\(run.id.uuidString)",
-        title: date,
+        title: backupID,
         subtitle: "\(run.status.title) · \(Self.timeFormatter.string(from: run.startedAt))",
-        date: date,
+        date: backupID,
         runID: run.id,
         status: run.status,
-        canRestore: snapshotDates.contains(date) && run.status != .running
+        canRestore: snapshotIDs.contains(backupID) && run.status != .running
       )
     }
 
-    let snapshotItems = snapshotDates
-      .filter { !runDates.contains($0) }
+    let snapshotItems = snapshotIDs
+      .filter { !runBackupIDs.contains($0) }
       .sorted(by: >)
-      .map { date in
+      .map { backupID in
         BackupListItem(
-          id: "snapshot-\(date)",
-          title: date,
+          id: "snapshot-\(backupID)",
+          title: backupID,
           subtitle: "Snapshot",
-          date: date,
+          date: backupID,
           runID: nil,
           status: .success,
           canRestore: true
@@ -97,9 +97,14 @@ struct BackupAgentView: View {
       }
       store.loadBackupData(systemID: definition.id)
       ensureSelection()
+      loadSelectedBackupLog()
     }
     .onChange(of: backupItems) {
       ensureSelection()
+      loadSelectedBackupLog()
+    }
+    .onChange(of: selectedItemID) {
+      loadSelectedBackupLog()
     }
     .confirmationDialog(
       "Restore \(definition.title)?",
@@ -301,7 +306,7 @@ struct BackupAgentView: View {
       if isLoading {
         VStack(spacing: 8) {
           ProgressView()
-          Text("Loading latest backup details...")
+          Text("Loading newest backup details...")
             .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, minHeight: 320)
@@ -320,7 +325,7 @@ struct BackupAgentView: View {
       Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
         GridRow {
           Text("Name")
-          Text("Latest")
+          Text("Newest Run")
           Text("Snapshots")
           Text("Size")
           Text("State")
@@ -365,6 +370,14 @@ struct BackupAgentView: View {
     selectedItemID = backupItems.first?.id
   }
 
+  private func loadSelectedBackupLog() {
+    guard let selectedItem, selectedItem.runID == nil, let backupID = selectedItem.date else {
+      return
+    }
+
+    store.loadBackupLog(systemID: definition.id, backupID: backupID)
+  }
+
   private func logText(for item: BackupListItem) -> String {
     if let runID = item.runID {
       return store.logText(for: runID, systemID: definition.id)
@@ -377,10 +390,10 @@ struct BackupAgentView: View {
     return "No logs found."
   }
 
-  private static let dayFormatter: DateFormatter = {
+  private static let runIDFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyy-MM-dd"
+    formatter.dateFormat = "yyyy-MM-dd-HHmm"
     return formatter
   }()
 
