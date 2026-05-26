@@ -14,12 +14,15 @@ final class BackupAgentStore: ObservableObject {
   @Published private(set) var runLogs: [BackupSystemID: [String: String]] = [:]
   @Published private(set) var runComponents: [BackupSystemID: [String: [BackupComponentStatus]]] = [:]
   @Published private(set) var loadingSystemIDs = Set<BackupSystemID>()
+  @Published private(set) var schedulerAnchorLoadedSystemIDs = Set<BackupSystemID>()
 
   private let defaults = UserDefaults.standard
   private let isMockMode: Bool
   private var scheduler: Timer?
   private var activeProcesses: [BackupRun.ID: Process] = [:]
   private var stoppedRunIDs = Set<BackupRun.ID>()
+  private var schedulerLastBackupDates: [BackupSystemID: Date] = [:]
+  private var loadingSchedulerAnchorSystemIDs = Set<BackupSystemID>()
 
   private init() {
     isMockMode = Self.detectMockMode()
@@ -32,6 +35,8 @@ final class BackupAgentStore: ObservableObject {
       })
       for definition in BackupSystemDefinition.all {
         statuses[definition.id] = Self.mockStatus(for: definition)
+        schedulerAnchorLoadedSystemIDs.insert(definition.id)
+        schedulerLastBackupDates[definition.id] = statuses[definition.id]?.latestCompletionDate
       }
     }
   }
@@ -41,20 +46,26 @@ final class BackupAgentStore: ObservableObject {
       return
     }
 
-    evaluateAutomaticBackups()
+    refreshSchedulerAnchors()
 
-    let timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+    let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
       Task { @MainActor in
         self?.evaluateAutomaticBackups()
       }
     }
-    timer.tolerance = 10
+    timer.tolerance = 5
     scheduler = timer
   }
 
   func refreshStatuses() {
     for definition in BackupSystemDefinition.all {
       loadBackupData(systemID: definition.id, force: true)
+    }
+  }
+
+  func refreshSchedulerAnchors() {
+    for definition in BackupSystemDefinition.all {
+      loadSchedulerAnchor(systemID: definition.id, force: true)
     }
   }
 
@@ -65,6 +76,8 @@ final class BackupAgentStore: ObservableObject {
       restoreDates[systemID] = Self.mockRestoreDates()[systemID] ?? []
       runLogs[systemID] = Self.mockRunLogs(for: systemID)
       runComponents[systemID] = Self.mockRunComponents(for: definition)
+      schedulerAnchorLoadedSystemIDs.insert(systemID)
+      schedulerLastBackupDates[systemID] = statuses[systemID]?.latestCompletionDate
       return
     }
 
@@ -89,6 +102,33 @@ final class BackupAgentStore: ObservableObject {
     }
   }
 
+  func loadSchedulerAnchor(systemID: BackupSystemID, force: Bool = false) {
+    if isMockMode {
+      schedulerAnchorLoadedSystemIDs.insert(systemID)
+      schedulerLastBackupDates[systemID] = statuses[systemID]?.latestCompletionDate
+      evaluateAutomaticBackup(for: BackupSystemDefinition.definition(for: systemID))
+      return
+    }
+
+    if loadingSchedulerAnchorSystemIDs.contains(systemID), !force {
+      return
+    }
+
+    loadingSchedulerAnchorSystemIDs.insert(systemID)
+
+    let definition = BackupSystemDefinition.definition(for: systemID)
+    Task.detached(priority: .utility) { [definition, systemID] in
+      let latestCompletionDate = BackupFilesystemLoader.loadLatestCompletionDate(for: definition)
+
+      await MainActor.run {
+        BackupAgentStore.shared.applyLoadedSchedulerAnchor(
+          latestCompletionDate,
+          systemID: systemID
+        )
+      }
+    }
+  }
+
   private func applyLoadedPageData(_ pageData: BackupPageData, systemID: BackupSystemID) {
     runs = runs.filter(\.isRunning)
 
@@ -97,7 +137,25 @@ final class BackupAgentStore: ObservableObject {
     if let newestRunID = pageData.restoreDates.first {
       cacheNewestBackupDetails(systemID: systemID, runID: newestRunID, status: pageData.status)
     }
+    if let latestCompletionDate = pageData.status.latestCompletionDate {
+      schedulerLastBackupDates[systemID] = latestCompletionDate
+    } else {
+      schedulerLastBackupDates[systemID] = nil
+    }
+    schedulerAnchorLoadedSystemIDs.insert(systemID)
     loadingSystemIDs.remove(systemID)
+    evaluateAutomaticBackup(for: BackupSystemDefinition.definition(for: systemID))
+  }
+
+  private func applyLoadedSchedulerAnchor(_ latestCompletionDate: Date?, systemID: BackupSystemID) {
+    if let latestCompletionDate {
+      schedulerLastBackupDates[systemID] = latestCompletionDate
+    } else {
+      schedulerLastBackupDates[systemID] = nil
+    }
+    schedulerAnchorLoadedSystemIDs.insert(systemID)
+    loadingSchedulerAnchorSystemIDs.remove(systemID)
+    evaluateAutomaticBackup(for: BackupSystemDefinition.definition(for: systemID))
   }
 
   func status(for systemID: BackupSystemID) -> BackupSystemStatus? {
@@ -122,6 +180,31 @@ final class BackupAgentStore: ObservableObject {
 
   func schedule(for systemID: BackupSystemID) -> BackupScheduleSettings {
     schedules[systemID] ?? Self.defaultSchedule(for: systemID, defaults: defaults)
+  }
+
+  func nextBackupCountdownLabel(for systemID: BackupSystemID, now: Date = Date()) -> String {
+    let schedule = schedule(for: systemID)
+    guard schedule.isEnabled else {
+      return "Automatic backups off"
+    }
+
+    guard statuses[systemID] != nil || schedulerAnchorLoadedSystemIDs.contains(systemID) else {
+      return "Checking last backup..."
+    }
+
+    guard let nextBackupDate = schedule.nextAutomaticBackupDate(
+      now: now,
+      lastBackupDate: lastBackupDate(for: systemID)
+    ) else {
+      return "Automatic backups off"
+    }
+
+    let remaining = nextBackupDate.timeIntervalSince(now)
+    guard remaining > 0 else {
+      return "Backup due now"
+    }
+
+    return "Next backup in \(Self.durationLabel(for: remaining))"
   }
 
   func updateSchedule(
@@ -323,32 +406,37 @@ final class BackupAgentStore: ObservableObject {
 
   private func evaluateAutomaticBackups() {
     let now = Date()
-    let today = Self.dayFormatter.string(from: now)
-    let currentTime = Calendar.current.dateComponents([.hour, .minute], from: now)
 
     for definition in BackupSystemDefinition.all {
-      let schedule = schedule(for: definition.id)
-
-      guard schedule.isEnabled else {
-        continue
-      }
-
-      guard activeRuns[definition.id] == nil else {
-        continue
-      }
-
-      guard currentTime.hour == schedule.hour, currentTime.minute == schedule.minute else {
-        continue
-      }
-
-      let attemptKey = "backupAgent.lastAutomaticAttempt.\(definition.id.rawValue)"
-      guard defaults.string(forKey: attemptKey) != today else {
-        continue
-      }
-
-      defaults.set(today, forKey: attemptKey)
-      runBackup(systemID: definition.id, trigger: .automatic)
+      evaluateAutomaticBackup(for: definition, now: now)
     }
+  }
+
+  private func evaluateAutomaticBackup(for definition: BackupSystemDefinition, now: Date = Date()) {
+    guard statuses[definition.id] != nil || schedulerAnchorLoadedSystemIDs.contains(definition.id) else {
+      loadSchedulerAnchor(systemID: definition.id)
+      return
+    }
+
+    let schedule = schedule(for: definition.id)
+    let today = Self.dayFormatter.string(from: now)
+    let attemptKey = "backupAgent.lastAutomaticAttempt.\(definition.id.rawValue)"
+
+    guard schedule.shouldRunAutomatically(
+      now: now,
+      lastAttemptDay: defaults.string(forKey: attemptKey),
+      lastBackupDate: lastBackupDate(for: definition.id),
+      isActive: activeRuns[definition.id] != nil
+    ) else {
+      return
+    }
+
+    defaults.set(today, forKey: attemptKey)
+    runBackup(systemID: definition.id, trigger: .automatic)
+  }
+
+  private func lastBackupDate(for systemID: BackupSystemID) -> Date? {
+    statuses[systemID]?.latestCompletionDate ?? schedulerLastBackupDates[systemID]
   }
 
   @discardableResult
@@ -461,6 +549,8 @@ final class BackupAgentStore: ObservableObject {
     activeRuns[systemID] = nil
     activeProcesses[runID] = nil
     stoppedRunIDs.remove(runID)
+    schedulerLastBackupDates[systemID] = runs[index].finishedAt
+    schedulerAnchorLoadedSystemIDs.insert(systemID)
 
     loadBackupData(systemID: systemID, force: true)
   }
@@ -561,6 +651,23 @@ final class BackupAgentStore: ObservableObject {
     formatter.dateFormat = "yyyy-MM-dd-HHmm"
     return formatter
   }()
+
+  private static func durationLabel(for interval: TimeInterval) -> String {
+    let totalMinutes = max(Int(ceil(interval / 60)), 1)
+    let days = totalMinutes / (24 * 60)
+    let hours = (totalMinutes % (24 * 60)) / 60
+    let minutes = totalMinutes % 60
+
+    if days > 0 {
+      return "\(days)d \(hours)h"
+    }
+
+    if hours > 0 {
+      return "\(hours)h \(minutes)m"
+    }
+
+    return "\(minutes)m"
+  }
 
   private static func mockRuns() -> [BackupRun] {
     [

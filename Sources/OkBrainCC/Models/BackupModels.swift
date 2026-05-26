@@ -271,4 +271,54 @@ struct BackupScheduleSettings: Hashable {
   var cronExpression: String {
     "\(minute) \(hour) * * *"
   }
+
+  func nextAutomaticBackupDate(now: Date, lastBackupDate: Date?, calendar: Calendar = .current) -> Date? {
+    guard isEnabled else {
+      return nil
+    }
+
+    if let lastBackupDate {
+      return lastBackupDate.addingTimeInterval(24 * 60 * 60)
+    }
+
+    guard let scheduledTime = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now) else {
+      return nil
+    }
+
+    if now >= scheduledTime {
+      return now
+    }
+
+    return scheduledTime
+  }
+
+  func shouldRunAutomatically(
+    now: Date,
+    lastAttemptDay: String?,
+    lastBackupDate: Date?,
+    isActive: Bool,
+    calendar: Calendar = .current
+  ) -> Bool {
+    guard isEnabled, !isActive else {
+      return false
+    }
+
+    let today = Self.dayFormatter.string(from: now)
+    guard lastAttemptDay != today else {
+      return false
+    }
+
+    guard let nextBackupDate = nextAutomaticBackupDate(now: now, lastBackupDate: lastBackupDate, calendar: calendar) else {
+      return false
+    }
+
+    return now >= nextBackupDate
+  }
+
+  private static let dayFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter
+  }()
 }

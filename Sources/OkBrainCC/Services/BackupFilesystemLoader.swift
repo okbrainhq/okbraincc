@@ -11,6 +11,21 @@ struct BackupRunDetails {
 }
 
 enum BackupFilesystemLoader {
+  static func loadLatestCompletionDate(for definition: BackupSystemDefinition) -> Date? {
+    let runIDs = recentRunIDs(for: definition, limit: 1)
+    guard let newestRunID = runIDs.first else {
+      return nil
+    }
+
+    let newestRunURL = runsDirectoryURL(for: definition).appendingPathComponent(newestRunID, isDirectory: true)
+    let newestMetadata = metadata(in: newestRunURL)
+    let backupLogTail = tail(of: newestRunURL.appendingPathComponent("backup.log", isDirectory: false))
+
+    return metadataDate("finished_at", in: newestMetadata) ??
+      latestCompletionDate(from: backupLogTail) ??
+      runDate(from: newestRunID)
+  }
+
   static func loadPageData(for definition: BackupSystemDefinition, limit: Int) -> BackupPageData {
     let runIDs = recentRunIDs(for: definition, limit: limit)
     let newestRunURL = newestRunURL(for: definition, runIDs: runIDs)
@@ -103,7 +118,9 @@ enum BackupFilesystemLoader {
       backupDirectoryPath: backupDirectoryURL.path,
       backupDirectoryExists: backupDirectoryExists,
       requiredComponentsAreCurrent: requiredCurrent,
-      latestCompletionDate: metadataDate("finished_at", in: newestMetadata) ?? latestCompletionDate(from: backupLogTail),
+      latestCompletionDate: metadataDate("finished_at", in: newestMetadata) ??
+        latestCompletionDate(from: backupLogTail) ??
+        newestRunID.flatMap(runDate),
       components: componentStatuses,
       recentErrors: recentErrors(from: backupLogTail + "\n" + stderrLogTail),
       backupLogTail: backupLogTail,
@@ -307,6 +324,15 @@ enum BackupFilesystemLoader {
     return timestampFormatter.date(from: String(line[timestampStart..<timestampEnd]))
   }
 
+  private static func runDate(from runID: String) -> Date? {
+    guard runID.count >= 15 else {
+      return nil
+    }
+
+    let timestampEnd = runID.index(runID.startIndex, offsetBy: 15)
+    return runIDFormatter.date(from: String(runID[..<timestampEnd]))
+  }
+
   private static let dayFormatter: DateFormatter = {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
@@ -318,6 +344,13 @@ enum BackupFilesystemLoader {
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+    return formatter
+  }()
+
+  private static let runIDFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.dateFormat = "yyyy-MM-dd-HHmm"
     return formatter
   }()
 }

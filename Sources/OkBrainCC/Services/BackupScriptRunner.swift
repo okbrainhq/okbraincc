@@ -13,7 +13,7 @@ enum BackupScriptError: LocalizedError {
   var errorDescription: String? {
     switch self {
     case .missingScriptsDirectory:
-      "Backup scripts directory was not found in the app bundle."
+      "Backup scripts directory was not found in the app bundle or deployment scripts directory."
     case .missingScript(let name):
       "Backup script was not found: \(name)"
     case .launchFailed(let message):
@@ -109,10 +109,10 @@ enum BackupScriptRunner {
       directories.append(mainResourceURL.appendingPathComponent("Resources/BackupAgent", isDirectory: true))
     }
 
-    if let moduleResourceURL = Bundle.module.resourceURL {
-      directories.append(moduleResourceURL.appendingPathComponent("BackupAgent", isDirectory: true))
-      directories.append(moduleResourceURL.appendingPathComponent("Resources/BackupAgent", isDirectory: true))
-    }
+    directories.append(
+      URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        .appendingPathComponent("scripts/deploy/BackupAgent", isDirectory: true)
+    )
 
     return directories
   }

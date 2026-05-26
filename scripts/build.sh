@@ -16,17 +16,21 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON_NAME="$APP_NAME.icns"
 APP_ICON="$APP_RESOURCES/$APP_ICON_NAME"
 MENU_BAR_SYMBOL="brain.head.profile"
+BACKUP_AGENT_SOURCE="$ROOT_DIR/scripts/deploy/BackupAgent"
+SWIFTPM_CACHE="$ROOT_DIR/.build/swiftpm-cache"
+SWIFTPM_FLAGS=(--disable-sandbox --cache-path "$SWIFTPM_CACHE")
 
 cd "$ROOT_DIR"
-swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+mkdir -p "$SWIFTPM_CACHE"
+swift build "${SWIFTPM_FLAGS[@]}"
+BUILD_BINARY="$(swift build "${SWIFTPM_FLAGS[@]}" --show-bin-path)/$APP_NAME"
 
 rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_MACOS"
 mkdir -p "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
-cp -R "$ROOT_DIR/Sources/OkBrainCC/Resources/BackupAgent" "$APP_RESOURCES/BackupAgent"
+cp -R "$BACKUP_AGENT_SOURCE" "$APP_RESOURCES/BackupAgent"
 /usr/bin/swift "$ROOT_DIR/scripts/generate_app_icon.swift" "$APP_ICON" "$MENU_BAR_SYMBOL"
 
 cat >"$INFO_PLIST" <<PLIST

@@ -140,8 +140,10 @@ struct BackupAgentView: View {
           Text(definition.title)
             .font(.title2.weight(.semibold))
 
-          Text("\(definition.subtitle) · \(store.schedule(for: definition.id).timeLabel)")
-            .foregroundStyle(.secondary)
+          TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            Text("\(definition.subtitle) · \(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))")
+              .foregroundStyle(.secondary)
+          }
         }
 
         Spacer()
@@ -546,6 +548,15 @@ private struct BackupSettingsView: View {
       .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
       Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+        GridRow {
+          Text("Next Backup")
+            .foregroundStyle(.secondary)
+          TimelineView(.periodic(from: .now, by: 60)) { timeline in
+            Text(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))
+              .font(.callout.monospaced())
+              .textSelection(.enabled)
+          }
+        }
         settingsRow("In-App Time", schedule.timeLabel)
         settingsRow("Cron", schedule.cronExpression)
         settingsRow("Backups to Keep", "\(schedule.retentionCount)")

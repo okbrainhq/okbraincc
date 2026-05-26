@@ -12,10 +12,7 @@ let package = Package(
   ],
   targets: [
     .executableTarget(
-      name: "OkBrainCC",
-      resources: [
-        .copy("Resources/BackupAgent")
-      ]
+      name: "OkBrainCC"
     )
   ]
 )
