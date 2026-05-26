@@ -32,111 +32,106 @@ func date(year: Int, month: Int, day: Int, hour: Int, minute: Int) -> Date {
   return result
 }
 
-let dueAtTime = BackupScheduleSettings(isEnabled: true, hour: 10, minute: 30, retentionCount: 30)
+let hourly = BackupScheduleSettings(isEnabled: true, intervalMinutes: 60, retentionCount: 30)
+let lastBackupAt0822 = date(year: 2026, month: 5, day: 26, hour: 8, minute: 22)
+
 expect(
-  dueAtTime.shouldRunAutomatically(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 30),
-    lastAttemptDay: nil,
-    lastBackupDate: nil,
-    isActive: false,
-    calendar: calendar
-  ),
-  "backup should run at the scheduled time"
+  hourly.nextAutomaticBackupDate(
+    now: date(year: 2026, month: 5, day: 26, hour: 8, minute: 30),
+    lastBackupDate: lastBackupAt0822,
+    lastAttemptDate: nil
+  ) == date(year: 2026, month: 5, day: 26, hour: 9, minute: 22),
+  "next backup should be one hour after the last backup"
 )
 
-let catchUp = BackupScheduleSettings(isEnabled: true, hour: 3, minute: 30, retentionCount: 30)
 expect(
-  catchUp.shouldRunAutomatically(
+  hourly.nextAutomaticBackupDate(
+    now: date(year: 2026, month: 5, day: 26, hour: 14, minute: 45),
+    lastBackupDate: lastBackupAt0822,
+    lastAttemptDate: nil
+  ) == date(year: 2026, month: 5, day: 26, hour: 9, minute: 22),
+  "next backup should not roll to tomorrow when an hourly backup is overdue"
+)
+
+expect(
+  !hourly.shouldRunAutomatically(
+    now: date(year: 2026, month: 5, day: 26, hour: 9, minute: 21),
+    lastAttemptDate: nil,
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
+  ),
+  "hourly backup should not run before the interval has elapsed"
+)
+
+expect(
+  hourly.shouldRunAutomatically(
+    now: date(year: 2026, month: 5, day: 26, hour: 9, minute: 22),
+    lastAttemptDate: nil,
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
+  ),
+  "hourly backup should run when one hour has elapsed"
+)
+
+expect(
+  hourly.shouldRunAutomatically(
+    now: date(year: 2026, month: 5, day: 26, hour: 14, minute: 45),
+    lastAttemptDate: nil,
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
+  ),
+  "hourly backup should be due now for a backup from 08:22"
+)
+
+expect(
+  hourly.nextAutomaticBackupDate(
+    now: date(year: 2026, month: 5, day: 26, hour: 14, minute: 45),
+    lastBackupDate: nil,
+    lastAttemptDate: nil
+  ) == date(year: 2026, month: 5, day: 26, hour: 14, minute: 45),
+  "backup should be due immediately when no previous backup exists"
+)
+
+expect(
+  !hourly.shouldRunAutomatically(
+    now: date(year: 2026, month: 5, day: 26, hour: 9, minute: 30),
+    lastAttemptDate: date(year: 2026, month: 5, day: 26, hour: 9, minute: 0),
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
+  ),
+  "automatic attempts should be throttled by the interval"
+)
+
+expect(
+  hourly.shouldRunAutomatically(
     now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: nil,
-    lastBackupDate: nil,
-    isActive: false,
-    calendar: calendar
+    lastAttemptDate: date(year: 2026, month: 5, day: 26, hour: 9, minute: 0),
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
   ),
-  "backup should catch up after the scheduled time"
+  "automatic attempt throttle should expire after the interval"
 )
 
-expect(
-  catchUp.nextAutomaticBackupDate(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastBackupDate: date(year: 2026, month: 5, day: 26, hour: 9, minute: 0),
-    calendar: calendar
-  ) == date(year: 2026, month: 5, day: 27, hour: 9, minute: 0),
-  "next backup should be anchored to the last backup time"
-)
-
-expect(
-  catchUp.nextAutomaticBackupDate(
-    now: date(year: 2026, month: 5, day: 26, hour: 2, minute: 0),
-    lastBackupDate: nil,
-    calendar: calendar
-  ) == date(year: 2026, month: 5, day: 26, hour: 3, minute: 30),
-  "first backup should use configured time when no previous backup exists"
-)
-
-expect(
-  !dueAtTime.shouldRunAutomatically(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 29),
-    lastAttemptDay: nil,
-    lastBackupDate: nil,
-    isActive: false,
-    calendar: calendar
-  ),
-  "backup should not run before the scheduled time"
-)
-
-expect(
-  !catchUp.shouldRunAutomatically(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: "2026-05-26",
-    lastBackupDate: nil,
-    isActive: false,
-    calendar: calendar
-  ),
-  "backup should run only once per day"
-)
-
-let disabled = BackupScheduleSettings(isEnabled: false, hour: 3, minute: 30, retentionCount: 30)
+let disabled = BackupScheduleSettings(isEnabled: false, intervalMinutes: 60, retentionCount: 30)
 expect(
   !disabled.shouldRunAutomatically(
     now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: nil,
-    lastBackupDate: nil,
-    isActive: false,
-    calendar: calendar
+    lastAttemptDate: nil,
+    lastBackupDate: lastBackupAt0822,
+    isActive: false
   ),
   "disabled schedule should not run"
 )
 
 expect(
-  !catchUp.shouldRunAutomatically(
+  !hourly.shouldRunAutomatically(
     now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: nil,
-    lastBackupDate: nil,
-    isActive: true,
-    calendar: calendar
+    lastAttemptDate: nil,
+    lastBackupDate: lastBackupAt0822,
+    isActive: true
   ),
   "active backup should block another automatic backup"
 )
 
-expect(
-  !catchUp.shouldRunAutomatically(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: nil,
-    lastBackupDate: date(year: 2026, month: 5, day: 26, hour: 9, minute: 0),
-    isActive: false,
-    calendar: calendar
-  ),
-  "backup should not be due until 24 hours after the last backup"
-)
-
-expect(
-  catchUp.shouldRunAutomatically(
-    now: date(year: 2026, month: 5, day: 26, hour: 10, minute: 0),
-    lastAttemptDay: nil,
-    lastBackupDate: date(year: 2026, month: 5, day: 25, hour: 9, minute: 59),
-    isActive: false,
-    calendar: calendar
-  ),
-  "backup should be due when 24 hours passed since the last backup"
-)
+let ninetyMinutes = BackupScheduleSettings(isEnabled: true, intervalMinutes: 90, retentionCount: 30)
+expect(ninetyMinutes.intervalLabel == "Every 1h 30m", "interval label should include hours and minutes")

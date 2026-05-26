@@ -260,65 +260,64 @@ struct BackupSystemStatus: Hashable {
 
 struct BackupScheduleSettings: Hashable {
   let isEnabled: Bool
-  let hour: Int
-  let minute: Int
+  let intervalMinutes: Int
   let retentionCount: Int
 
-  var timeLabel: String {
-    String(format: "%02d:%02d", hour, minute)
+  var intervalHoursComponent: Int {
+    intervalMinutes / 60
   }
 
-  var cronExpression: String {
-    "\(minute) \(hour) * * *"
+  var intervalMinuteComponent: Int {
+    intervalMinutes % 60
   }
 
-  func nextAutomaticBackupDate(now: Date, lastBackupDate: Date?, calendar: Calendar = .current) -> Date? {
+  var intervalLabel: String {
+    let hours = intervalHoursComponent
+    let minutes = intervalMinuteComponent
+
+    if hours > 0, minutes > 0 {
+      return "Every \(hours)h \(minutes)m"
+    }
+
+    if hours > 0 {
+      return "Every \(hours)h"
+    }
+
+    return "Every \(minutes)m"
+  }
+
+  func nextAutomaticBackupDate(now: Date, lastBackupDate: Date?, lastAttemptDate: Date?) -> Date? {
     guard isEnabled else {
       return nil
     }
 
-    if let lastBackupDate {
-      return lastBackupDate.addingTimeInterval(24 * 60 * 60)
-    }
-
-    guard let scheduledTime = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now) else {
-      return nil
-    }
-
-    if now >= scheduledTime {
+    let interval = TimeInterval(max(intervalMinutes, 1) * 60)
+    let anchors = [lastBackupDate, lastAttemptDate].compactMap { $0 }
+    guard let anchor = anchors.max() else {
       return now
     }
 
-    return scheduledTime
+    return anchor.addingTimeInterval(interval)
   }
 
   func shouldRunAutomatically(
     now: Date,
-    lastAttemptDay: String?,
+    lastAttemptDate: Date?,
     lastBackupDate: Date?,
-    isActive: Bool,
-    calendar: Calendar = .current
+    isActive: Bool
   ) -> Bool {
     guard isEnabled, !isActive else {
       return false
     }
 
-    let today = Self.dayFormatter.string(from: now)
-    guard lastAttemptDay != today else {
-      return false
-    }
-
-    guard let nextBackupDate = nextAutomaticBackupDate(now: now, lastBackupDate: lastBackupDate, calendar: calendar) else {
+    guard let nextBackupDate = nextAutomaticBackupDate(
+      now: now,
+      lastBackupDate: lastBackupDate,
+      lastAttemptDate: lastAttemptDate
+    ) else {
       return false
     }
 
     return now >= nextBackupDate
   }
-
-  private static let dayFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyy-MM-dd"
-    return formatter
-  }()
 }

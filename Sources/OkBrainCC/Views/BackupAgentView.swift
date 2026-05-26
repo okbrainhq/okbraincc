@@ -508,23 +508,23 @@ private struct BackupSettingsView: View {
 
         HStack(spacing: 12) {
           Picker(
-            "Hour",
+            "Hours",
             selection: Binding(
-              get: { schedule.hour },
-              set: { store.updateSchedule(systemID: definition.id, hour: $0) }
+              get: { schedule.intervalHoursComponent },
+              set: { updateInterval(hours: $0) }
             )
           ) {
-            ForEach(0..<24, id: \.self) { hour in
+            ForEach(0...24, id: \.self) { hour in
               Text(String(format: "%02d", hour)).tag(hour)
             }
           }
           .frame(width: 130)
 
           Picker(
-            "Minute",
+            "Minutes",
             selection: Binding(
-              get: { schedule.minute },
-              set: { store.updateSchedule(systemID: definition.id, minute: $0) }
+              get: { schedule.intervalMinuteComponent },
+              set: { updateInterval(minutes: $0) }
             )
           ) {
             ForEach(0..<60, id: \.self) { minute in
@@ -557,8 +557,9 @@ private struct BackupSettingsView: View {
               .textSelection(.enabled)
           }
         }
-        settingsRow("In-App Time", schedule.timeLabel)
-        settingsRow("Cron", schedule.cronExpression)
+        settingsRow("Interval", schedule.intervalLabel)
+        settingsRow("Runner", "In-app timer")
+        settingsRow("Original Cron", "\(definition.scheduleMinute) \(definition.scheduleHour) * * *")
         settingsRow("Backups to Keep", "\(schedule.retentionCount)")
         settingsRow("Original Schedule", definition.scheduleLabel)
         settingsRow("Remote Host", definition.remoteHost)
@@ -573,6 +574,13 @@ private struct BackupSettingsView: View {
     }
     .padding(24)
     .frame(width: 620, height: 460, alignment: .topLeading)
+  }
+
+  private func updateInterval(hours: Int? = nil, minutes: Int? = nil) {
+    let nextHours = min(max(hours ?? schedule.intervalHoursComponent, 0), 24)
+    let nextMinutes = min(max(minutes ?? schedule.intervalMinuteComponent, 0), 59)
+    let totalMinutes = min(max((nextHours * 60) + nextMinutes, 1), 24 * 60)
+    store.updateSchedule(systemID: definition.id, intervalMinutes: totalMinutes)
   }
 
   private func settingsRow(_ title: String, _ value: String) -> some View {

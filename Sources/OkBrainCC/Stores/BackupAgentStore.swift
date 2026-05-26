@@ -194,7 +194,8 @@ final class BackupAgentStore: ObservableObject {
 
     guard let nextBackupDate = schedule.nextAutomaticBackupDate(
       now: now,
-      lastBackupDate: lastBackupDate(for: systemID)
+      lastBackupDate: lastBackupDate(for: systemID),
+      lastAttemptDate: lastAutomaticAttemptDate(for: systemID)
     ) else {
       return "Automatic backups off"
     }
@@ -210,21 +211,18 @@ final class BackupAgentStore: ObservableObject {
   func updateSchedule(
     systemID: BackupSystemID,
     isEnabled: Bool? = nil,
-    hour: Int? = nil,
-    minute: Int? = nil,
+    intervalMinutes: Int? = nil,
     retentionCount: Int? = nil
   ) {
     let current = schedule(for: systemID)
     let next = BackupScheduleSettings(
       isEnabled: isEnabled ?? current.isEnabled,
-      hour: min(max(hour ?? current.hour, 0), 23),
-      minute: min(max(minute ?? current.minute, 0), 59),
+      intervalMinutes: min(max(intervalMinutes ?? current.intervalMinutes, 1), 24 * 60),
       retentionCount: min(max(retentionCount ?? current.retentionCount, 1), 365)
     )
 
     defaults.set(next.isEnabled, forKey: Self.scheduleEnabledKey(for: systemID))
-    defaults.set(next.hour, forKey: Self.scheduleHourKey(for: systemID))
-    defaults.set(next.minute, forKey: Self.scheduleMinuteKey(for: systemID))
+    defaults.set(next.intervalMinutes, forKey: Self.scheduleIntervalMinutesKey(for: systemID))
     defaults.set(next.retentionCount, forKey: Self.retentionCountKey(for: systemID))
     schedules[systemID] = next
     restoreDates[systemID] = restoreDates[systemID].map { Array($0.prefix(next.retentionCount)) }
@@ -419,24 +417,26 @@ final class BackupAgentStore: ObservableObject {
     }
 
     let schedule = schedule(for: definition.id)
-    let today = Self.dayFormatter.string(from: now)
-    let attemptKey = "backupAgent.lastAutomaticAttempt.\(definition.id.rawValue)"
 
     guard schedule.shouldRunAutomatically(
       now: now,
-      lastAttemptDay: defaults.string(forKey: attemptKey),
+      lastAttemptDate: lastAutomaticAttemptDate(for: definition.id),
       lastBackupDate: lastBackupDate(for: definition.id),
       isActive: activeRuns[definition.id] != nil
     ) else {
       return
     }
 
-    defaults.set(today, forKey: attemptKey)
+    defaults.set(now, forKey: Self.lastAutomaticAttemptDateKey(for: definition.id))
     runBackup(systemID: definition.id, trigger: .automatic)
   }
 
   private func lastBackupDate(for systemID: BackupSystemID) -> Date? {
     statuses[systemID]?.latestCompletionDate ?? schedulerLastBackupDates[systemID]
+  }
+
+  private func lastAutomaticAttemptDate(for systemID: BackupSystemID) -> Date? {
+    defaults.object(forKey: Self.lastAutomaticAttemptDateKey(for: systemID)) as? Date
   }
 
   @discardableResult
@@ -567,18 +567,32 @@ final class BackupAgentStore: ObservableObject {
   }
 
   private static func defaultSchedule(for systemID: BackupSystemID, defaults: UserDefaults) -> BackupScheduleSettings {
-    let definition = BackupSystemDefinition.definition(for: systemID)
     let isEnabled = defaults.object(forKey: scheduleEnabledKey(for: systemID)) as? Bool ?? true
-    let hour = defaults.object(forKey: scheduleHourKey(for: systemID)) as? Int ?? definition.scheduleHour
-    let minute = defaults.object(forKey: scheduleMinuteKey(for: systemID)) as? Int ?? definition.scheduleMinute
+    let intervalMinutes = storedIntervalMinutes(for: systemID, defaults: defaults)
     let retentionCount = defaults.object(forKey: retentionCountKey(for: systemID)) as? Int ?? 30
 
     return BackupScheduleSettings(
       isEnabled: isEnabled,
-      hour: min(max(hour, 0), 23),
-      minute: min(max(minute, 0), 59),
+      intervalMinutes: min(max(intervalMinutes, 1), 24 * 60),
       retentionCount: min(max(retentionCount, 1), 365)
     )
+  }
+
+  private static func storedIntervalMinutes(for systemID: BackupSystemID, defaults: UserDefaults) -> Int {
+    if let intervalMinutes = defaults.object(forKey: scheduleIntervalMinutesKey(for: systemID)) as? Int {
+      return intervalMinutes
+    }
+
+    if
+      let legacyHour = defaults.object(forKey: scheduleHourKey(for: systemID)) as? Int,
+      let legacyMinute = defaults.object(forKey: scheduleMinuteKey(for: systemID)) as? Int
+    {
+      let migratedInterval = max((legacyHour * 60) + legacyMinute, 1)
+      defaults.set(migratedInterval, forKey: scheduleIntervalMinutesKey(for: systemID))
+      return migratedInterval
+    }
+
+    return 60
   }
 
   private static func scheduleEnabledKey(for systemID: BackupSystemID) -> String {
@@ -591,6 +605,14 @@ final class BackupAgentStore: ObservableObject {
 
   private static func scheduleMinuteKey(for systemID: BackupSystemID) -> String {
     "backupAgent.scheduleMinute.\(systemID.rawValue)"
+  }
+
+  private static func scheduleIntervalMinutesKey(for systemID: BackupSystemID) -> String {
+    "backupAgent.scheduleIntervalMinutes.\(systemID.rawValue)"
+  }
+
+  private static func lastAutomaticAttemptDateKey(for systemID: BackupSystemID) -> String {
+    "backupAgent.lastAutomaticAttemptDate.\(systemID.rawValue)"
   }
 
   private static func retentionCountKey(for systemID: BackupSystemID) -> String {
@@ -637,13 +659,6 @@ final class BackupAgentStore: ObservableObject {
 
     return run.id
   }
-
-  private static let dayFormatter: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = "yyyy-MM-dd"
-    return formatter
-  }()
 
   private static let runIDFormatter: DateFormatter = {
     let formatter = DateFormatter()
