@@ -37,6 +37,7 @@ enum BackupScriptRunner {
   static func run(
     scriptName: String,
     arguments: [String],
+    extraEnvironment: [String: String] = [:],
     onProcessStart: @escaping (Process) -> Void,
     onOutput: @escaping @Sendable (String) -> Void
   ) async throws -> BackupScriptResult {
@@ -51,6 +52,9 @@ enum BackupScriptRunner {
       var environment = ProcessInfo.processInfo.environment
       environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
       environment["OKBRAINCC_BACKUP_AGENT"] = "1"
+      for (key, value) in extraEnvironment {
+        environment[key] = value
+      }
       process.environment = environment
 
       let pipe = Pipe()

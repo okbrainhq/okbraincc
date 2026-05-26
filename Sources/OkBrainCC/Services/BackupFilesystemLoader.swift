@@ -11,8 +11,8 @@ struct BackupRunDetails {
 }
 
 enum BackupFilesystemLoader {
-  static func loadPageData(for definition: BackupSystemDefinition) -> BackupPageData {
-    let runIDs = recentRunIDs(for: definition, limit: 30)
+  static func loadPageData(for definition: BackupSystemDefinition, limit: Int) -> BackupPageData {
+    let runIDs = recentRunIDs(for: definition, limit: limit)
     let newestRunURL = newestRunURL(for: definition, runIDs: runIDs)
     let status = buildStatus(for: definition, newestRunURL: newestRunURL, runIDs: runIDs)
 

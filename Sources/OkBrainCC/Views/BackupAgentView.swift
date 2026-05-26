@@ -340,10 +340,7 @@ struct BackupAgentView: View {
         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
           GridRow {
             Text("Name")
-            Text("Selected Run")
-            Text("Backups")
             Text("Size")
-            Text("State")
           }
           .font(.caption.weight(.semibold))
           .foregroundStyle(.secondary)
@@ -351,31 +348,18 @@ struct BackupAgentView: View {
           ForEach(selectedComponents) { component in
             GridRow {
               Text(component.title)
-              Text(component.latestDate ?? "Missing")
-                .font(.callout.monospacedDigit())
-              Text("\(component.snapshotCount)")
-                .font(.callout.monospacedDigit())
               Text(component.size)
                 .font(.callout.monospacedDigit())
-              componentBadge(component)
             }
 
             Divider()
-              .gridCellColumns(5)
+              .gridCellColumns(2)
           }
         }
         .padding(12)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
       }
     }
-  }
-
-  private func componentBadge(_ component: BackupComponentStatus) -> some View {
-    Label(
-      component.isCurrentToday ? "Today" : (component.isRequired ? "Stale" : "Optional"),
-      systemImage: component.isCurrentToday ? "checkmark.circle" : "clock.badge.exclamationmark"
-    )
-    .foregroundStyle(component.isCurrentToday ? .green : (component.isRequired ? .orange : .secondary))
   }
 
   private func ensureSelection() {
@@ -547,6 +531,16 @@ private struct BackupSettingsView: View {
           }
           .frame(width: 140)
         }
+
+        Stepper(
+          value: Binding(
+            get: { schedule.retentionCount },
+            set: { store.updateSchedule(systemID: definition.id, retentionCount: $0) }
+          ),
+          in: 1...365
+        ) {
+          Text("Keep \(schedule.retentionCount) backups")
+        }
       }
       .padding(16)
       .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
@@ -554,6 +548,7 @@ private struct BackupSettingsView: View {
       Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
         settingsRow("In-App Time", schedule.timeLabel)
         settingsRow("Cron", schedule.cronExpression)
+        settingsRow("Backups to Keep", "\(schedule.retentionCount)")
         settingsRow("Original Schedule", definition.scheduleLabel)
         settingsRow("Remote Host", definition.remoteHost)
         settingsRow("Backup Script", definition.backupScriptName)

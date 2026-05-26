@@ -262,6 +262,7 @@ struct BackupScheduleSettings: Hashable {
   let isEnabled: Bool
   let hour: Int
   let minute: Int
+  let retentionCount: Int
 
   var timeLabel: String {
     String(format: "%02d:%02d", hour, minute)

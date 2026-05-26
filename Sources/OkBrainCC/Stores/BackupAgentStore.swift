@@ -75,9 +75,13 @@ final class BackupAgentStore: ObservableObject {
     loadingSystemIDs.insert(systemID)
 
     let definition = BackupSystemDefinition.definition(for: systemID)
+    let retentionLimit = schedule(for: systemID).retentionCount
 
-    Task.detached(priority: .utility) { [definition, systemID] in
-      let pageData = BackupFilesystemLoader.loadPageData(for: definition)
+    Task.detached(priority: .utility) { [definition, systemID, retentionLimit] in
+      let pageData = BackupFilesystemLoader.loadPageData(
+        for: definition,
+        limit: retentionLimit
+      )
 
       await MainActor.run {
         BackupAgentStore.shared.applyLoadedPageData(pageData, systemID: systemID)
@@ -120,18 +124,27 @@ final class BackupAgentStore: ObservableObject {
     schedules[systemID] ?? Self.defaultSchedule(for: systemID, defaults: defaults)
   }
 
-  func updateSchedule(systemID: BackupSystemID, isEnabled: Bool? = nil, hour: Int? = nil, minute: Int? = nil) {
+  func updateSchedule(
+    systemID: BackupSystemID,
+    isEnabled: Bool? = nil,
+    hour: Int? = nil,
+    minute: Int? = nil,
+    retentionCount: Int? = nil
+  ) {
     let current = schedule(for: systemID)
     let next = BackupScheduleSettings(
       isEnabled: isEnabled ?? current.isEnabled,
       hour: min(max(hour ?? current.hour, 0), 23),
-      minute: min(max(minute ?? current.minute, 0), 59)
+      minute: min(max(minute ?? current.minute, 0), 59),
+      retentionCount: min(max(retentionCount ?? current.retentionCount, 1), 365)
     )
 
     defaults.set(next.isEnabled, forKey: Self.scheduleEnabledKey(for: systemID))
     defaults.set(next.hour, forKey: Self.scheduleHourKey(for: systemID))
     defaults.set(next.minute, forKey: Self.scheduleMinuteKey(for: systemID))
+    defaults.set(next.retentionCount, forKey: Self.retentionCountKey(for: systemID))
     schedules[systemID] = next
+    restoreDates[systemID] = restoreDates[systemID].map { Array($0.prefix(next.retentionCount)) }
   }
 
   @discardableResult
@@ -147,6 +160,7 @@ final class BackupAgentStore: ObservableObject {
       trigger: trigger,
       scriptName: definition.backupScriptName,
       arguments: [],
+      environment: ["OKBRAINCC_BACKUP_RETENTION_COUNT": "\(schedule(for: systemID).retentionCount)"],
       detail: "\(definition.title) backup"
     )
   }
@@ -344,6 +358,7 @@ final class BackupAgentStore: ObservableObject {
     trigger: BackupRunTrigger,
     scriptName: String,
     arguments: [String],
+    environment: [String: String] = [:],
     detail: String
   ) -> BackupRun.ID? {
     guard activeRuns[definition.id] == nil else {
@@ -371,6 +386,7 @@ final class BackupAgentStore: ObservableObject {
         let result = try await BackupScriptRunner.run(
           scriptName: scriptName,
           arguments: arguments,
+          extraEnvironment: environment,
           onProcessStart: { [weak self] process in
             Task { @MainActor in
               guard self?.activeRuns[definition.id] == run.id else {
@@ -465,11 +481,13 @@ final class BackupAgentStore: ObservableObject {
     let isEnabled = defaults.object(forKey: scheduleEnabledKey(for: systemID)) as? Bool ?? true
     let hour = defaults.object(forKey: scheduleHourKey(for: systemID)) as? Int ?? definition.scheduleHour
     let minute = defaults.object(forKey: scheduleMinuteKey(for: systemID)) as? Int ?? definition.scheduleMinute
+    let retentionCount = defaults.object(forKey: retentionCountKey(for: systemID)) as? Int ?? 30
 
     return BackupScheduleSettings(
       isEnabled: isEnabled,
       hour: min(max(hour, 0), 23),
-      minute: min(max(minute, 0), 59)
+      minute: min(max(minute, 0), 59),
+      retentionCount: min(max(retentionCount, 1), 365)
     )
   }
 
@@ -483,6 +501,10 @@ final class BackupAgentStore: ObservableObject {
 
   private static func scheduleMinuteKey(for systemID: BackupSystemID) -> String {
     "backupAgent.scheduleMinute.\(systemID.rawValue)"
+  }
+
+  private static func retentionCountKey(for systemID: BackupSystemID) -> String {
+    "backupAgent.retentionCount.\(systemID.rawValue)"
   }
 
   @discardableResult

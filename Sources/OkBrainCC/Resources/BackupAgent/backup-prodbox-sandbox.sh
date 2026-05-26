@@ -4,7 +4,11 @@ set -euo pipefail
 REMOTE_HOST="arunoda@prodbox-sandbox.local"
 BACKUP_ROOT="$HOME/okbraincc-backups/prodbox-sandbox"
 RUNS_DIR="$BACKUP_ROOT/runs"
-RETENTION_DAYS=30
+RETENTION_COUNT="${OKBRAINCC_BACKUP_RETENTION_COUNT:-30}"
+
+if ! [[ "$RETENTION_COUNT" =~ ^[0-9]+$ ]] || [ "$RETENTION_COUNT" -lt 1 ]; then
+  RETENTION_COUNT=30
+fi
 
 RUN_ID_BASE="$(date +%Y-%m-%d-%H%M)"
 RUN_ID="${OKBRAINCC_BACKUP_RUN_ID:-$RUN_ID_BASE}"
@@ -82,6 +86,20 @@ sync_snapshot() {
   log "$name backup saved: $dest ($(du -sh "$dest" | cut -f1))"
 }
 
+cleanup_old_runs() {
+  local index=0
+
+  while IFS= read -r run; do
+    index=$((index + 1))
+    if [ "$index" -le "$RETENTION_COUNT" ]; then
+      continue
+    fi
+
+    rm -rf "$RUNS_DIR/$run"
+    log "Removed old run: $run"
+  done < <(find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; 2>/dev/null | sort -r)
+}
+
 log "=== Prodbox sandbox backup started: $RUN_ID ==="
 
 sync_snapshot "brain-sandbox/apps" "/home/brain-sandbox/apps/" "apps"
@@ -89,10 +107,8 @@ sync_snapshot "brain-sandbox/upload_images" "/home/brain-sandbox/upload_images/"
 sync_snapshot "brain-sandbox/skills" "/home/brain-sandbox/skills/" "skills"
 sync_snapshot "brain-data" "/var/www/brain-data/" "brain-data"
 
-log "Cleaning up runs older than $RETENTION_DAYS days..."
-find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -mtime +"$RETENTION_DAYS" -exec rm -rf {} \; -print | while read -r f; do
-  log "Removed old run: $f"
-done
+log "Keeping newest $RETENTION_COUNT backup runs..."
+cleanup_old_runs
 
 STATUS="success"
 log "=== Prodbox sandbox backup completed: $RUN_ID ==="
