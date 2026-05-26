@@ -3,31 +3,45 @@ import Foundation
 struct BackupPageData {
   let status: BackupSystemStatus
   let restoreDates: [String]
-  let runs: [BackupRun]?
+}
+
+struct BackupRunDetails {
+  let log: String
+  let components: [BackupComponentStatus]
 }
 
 enum BackupFilesystemLoader {
-  static func loadPageData(for definition: BackupSystemDefinition, historyURL: URL?) -> BackupPageData {
+  static func loadPageData(for definition: BackupSystemDefinition) -> BackupPageData {
     let runIDs = recentRunIDs(for: definition, limit: 30)
     let newestRunURL = newestRunURL(for: definition, runIDs: runIDs)
     let status = buildStatus(for: definition, newestRunURL: newestRunURL, runIDs: runIDs)
-    let runs = historyURL.map(loadRuns)
 
-    return BackupPageData(status: status, restoreDates: runIDs, runs: runs)
+    return BackupPageData(status: status, restoreDates: runIDs)
   }
 
-  static func loadRunLog(for definition: BackupSystemDefinition, runID: String) -> String {
+  static func loadRunDetails(for definition: BackupSystemDefinition, runID: String) -> BackupRunDetails {
     guard runID.range(of: #"[\/]"#, options: .regularExpression) == nil else {
-      return "Invalid backup run id: \(runID)"
+      return BackupRunDetails(log: "Invalid backup run id: \(runID)", components: [])
     }
 
     let runURL = runsDirectoryURL(for: definition).appendingPathComponent(runID, isDirectory: true)
     guard FileManager.default.fileExists(atPath: runURL.path) else {
-      return "No backup run found for \(runID)."
+      return BackupRunDetails(log: "No backup run found for \(runID).", components: [])
     }
 
+    let runIDs = recentRunIDs(for: definition, limit: 30)
     let log = combinedLog(in: runURL)
-    return log.isEmpty ? "No logs found for \(runID)." : log
+    let components = buildComponentStatuses(
+      for: definition,
+      runURL: runURL,
+      runID: runID,
+      runIDs: runIDs
+    )
+
+    return BackupRunDetails(
+      log: log.isEmpty ? "No logs found for \(runID)." : log,
+      components: components
+    )
   }
 
   private static func recentRunIDs(for definition: BackupSystemDefinition, limit: Int) -> [String] {
@@ -60,23 +74,20 @@ enum BackupFilesystemLoader {
   ) -> BackupSystemStatus {
     let backupDirectoryURL = definition.backupDirectoryURL
     let backupDirectoryExists = FileManager.default.fileExists(atPath: backupDirectoryURL.path)
-    let today = dayFormatter.string(from: Date())
     let newestRunID = newestRunURL?.lastPathComponent
     let newestMetadata = newestRunURL.map { metadata(in: $0) } ?? [:]
     let newestRunSucceeded = newestMetadata["status"] == "success" ||
       (newestRunURL.map { tail(of: $0.appendingPathComponent("backup.log")).contains("completed") } ?? false)
 
-    let componentStatuses = definition.components.map { component in
-      buildComponentStatus(
-        component,
-        definition: definition,
-        newestRunURL: newestRunURL,
-        newestRunID: newestRunID,
-        newestRunSucceeded: newestRunSucceeded,
-        today: today,
+    let componentStatuses = newestRunURL.map {
+      buildComponentStatuses(
+        for: definition,
+        runURL: $0,
+        runID: newestRunID,
+        runSucceeded: newestRunSucceeded,
         runIDs: runIDs
       )
-    }
+    } ?? definition.components.map { missingComponentStatus(for: $0, definition: definition) }
 
     let requiredCurrent = newestRunSucceeded &&
       componentStatuses
@@ -101,35 +112,56 @@ enum BackupFilesystemLoader {
     )
   }
 
-  private static func buildComponentStatus(
-    _ component: BackupComponentDefinition,
-    definition: BackupSystemDefinition,
-    newestRunURL: URL?,
-    newestRunID: String?,
-    newestRunSucceeded: Bool,
-    today: String,
+  private static func buildComponentStatuses(
+    for definition: BackupSystemDefinition,
+    runURL: URL,
+    runID: String?,
+    runSucceeded: Bool? = nil,
     runIDs: [String]
-  ) -> BackupComponentStatus {
-    let newestComponentURL = newestRunURL.map { componentURL(for: component, in: $0) }
-    let newestComponentExists = newestComponentURL.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
-    let snapshotCount = runIDs.reduce(into: 0) { count, runID in
-      let runURL = runsDirectoryURL(for: definition)
-        .appendingPathComponent(runID, isDirectory: true)
-      let snapshotURL = componentURL(for: component, in: runURL)
-      if FileManager.default.fileExists(atPath: snapshotURL.path) {
-        count += 1
-      }
-    }
+  ) -> [BackupComponentStatus] {
+    let metadata = self.metadata(in: runURL)
+    let succeeded = runSucceeded ??
+      (metadata["status"] == "success" || tail(of: runURL.appendingPathComponent("backup.log")).contains("completed"))
+    let today = dayFormatter.string(from: Date())
 
+    return definition.components.map { component in
+      let selectedComponentURL = componentURL(for: component, in: runURL)
+      let selectedComponentExists = FileManager.default.fileExists(atPath: selectedComponentURL.path)
+      let snapshotCount = runIDs.reduce(into: 0) { count, candidateRunID in
+        let candidateRunURL = runsDirectoryURL(for: definition)
+          .appendingPathComponent(candidateRunID, isDirectory: true)
+        let candidateComponentURL = componentURL(for: component, in: candidateRunURL)
+        if FileManager.default.fileExists(atPath: candidateComponentURL.path) {
+          count += 1
+        }
+      }
+
+      return BackupComponentStatus(
+        id: component.id,
+        title: component.title,
+        isRequired: component.isRequired,
+        latestDate: selectedComponentExists ? runID : nil,
+        snapshotCount: snapshotCount,
+        size: diskUsage(for: selectedComponentURL),
+        isCurrentToday: selectedComponentExists && succeeded && (runID?.hasPrefix(today) == true),
+        path: selectedComponentURL.path
+      )
+    }
+  }
+
+  private static func missingComponentStatus(
+    for component: BackupComponentDefinition,
+    definition: BackupSystemDefinition
+  ) -> BackupComponentStatus {
     return BackupComponentStatus(
       id: component.id,
       title: component.title,
       isRequired: component.isRequired,
-      latestDate: newestComponentExists ? newestRunID : nil,
-      snapshotCount: snapshotCount,
-      size: newestComponentURL.map(diskUsage) ?? "Missing",
-      isCurrentToday: newestComponentExists && newestRunSucceeded && (newestRunID?.hasPrefix(today) == true),
-      path: newestComponentURL?.path ?? definition.backupDirectoryURL.path
+      latestDate: nil,
+      snapshotCount: 0,
+      size: "Missing",
+      isCurrentToday: false,
+      path: definition.backupDirectoryURL.path
     )
   }
 
@@ -273,17 +305,6 @@ enum BackupFilesystemLoader {
     let timestampStart = line.index(after: line.startIndex)
     let timestampEnd = line.index(timestampStart, offsetBy: 19, limitedBy: line.endIndex) ?? line.endIndex
     return timestampFormatter.date(from: String(line[timestampStart..<timestampEnd]))
-  }
-
-  private static func loadRuns(from url: URL) -> [BackupRun] {
-    do {
-      let data = try Data(contentsOf: url)
-      let decoder = JSONDecoder()
-      decoder.dateDecodingStrategy = .iso8601
-      return try decoder.decode([BackupRun].self, from: data)
-    } catch {
-      return []
-    }
   }
 
   private static let dayFormatter: DateFormatter = {

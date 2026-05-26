@@ -26,6 +26,14 @@ struct BackupAgentView: View {
     backupItems.first { $0.id == selectedItemID }
   }
 
+  private var selectedComponents: [BackupComponentStatus] {
+    guard let selectedItem, let backupID = selectedItem.date else {
+      return []
+    }
+
+    return store.components(forBackupDate: backupID, systemID: definition.id)
+  }
+
   private var restoreOption: BackupRestoreOption {
     definition.restoreOptions.first { $0.id == restoreOptionID } ?? definition.restoreOptions[0]
   }
@@ -97,14 +105,14 @@ struct BackupAgentView: View {
       }
       store.loadBackupData(systemID: definition.id)
       ensureSelection()
-      loadSelectedBackupLog()
+      loadSelectedBackupDetails()
     }
     .onChange(of: backupItems) {
       ensureSelection()
-      loadSelectedBackupLog()
+      loadSelectedBackupDetails()
     }
     .onChange(of: selectedItemID) {
-      loadSelectedBackupLog()
+      loadSelectedBackupDetails()
     }
     .confirmationDialog(
       "Restore \(definition.title)?",
@@ -285,7 +293,7 @@ struct BackupAgentView: View {
           }
         }
 
-        componentStatus
+        componentStatus(for: selectedItem)
 
         VStack(alignment: .leading, spacing: 10) {
           Text("Logs")
@@ -317,40 +325,48 @@ struct BackupAgentView: View {
     }
   }
 
-  private var componentStatus: some View {
+  private func componentStatus(for selectedItem: BackupListItem) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Text("Components")
         .font(.headline)
 
-      Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
-        GridRow {
-          Text("Name")
-          Text("Newest Run")
-          Text("Snapshots")
-          Text("Size")
-          Text("State")
-        }
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.secondary)
-
-        ForEach(status?.components ?? []) { component in
+      if selectedComponents.isEmpty {
+        Text(selectedItem.status == .running ? "Components will appear after this backup writes data." : "Loading component details...")
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
+          .padding(12)
+          .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+      } else {
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 8) {
           GridRow {
-            Text(component.title)
-            Text(component.latestDate ?? "Missing")
-              .font(.callout.monospacedDigit())
-            Text("\(component.snapshotCount)")
-              .font(.callout.monospacedDigit())
-            Text(component.size)
-              .font(.callout.monospacedDigit())
-            componentBadge(component)
+            Text("Name")
+            Text("Selected Run")
+            Text("Backups")
+            Text("Size")
+            Text("State")
           }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(.secondary)
 
-          Divider()
-            .gridCellColumns(5)
+          ForEach(selectedComponents) { component in
+            GridRow {
+              Text(component.title)
+              Text(component.latestDate ?? "Missing")
+                .font(.callout.monospacedDigit())
+              Text("\(component.snapshotCount)")
+                .font(.callout.monospacedDigit())
+              Text(component.size)
+                .font(.callout.monospacedDigit())
+              componentBadge(component)
+            }
+
+            Divider()
+              .gridCellColumns(5)
+          }
         }
+        .padding(12)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
       }
-      .padding(12)
-      .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
     }
   }
 
@@ -370,12 +386,12 @@ struct BackupAgentView: View {
     selectedItemID = backupItems.first?.id
   }
 
-  private func loadSelectedBackupLog() {
+  private func loadSelectedBackupDetails() {
     guard let selectedItem, selectedItem.runID == nil, let backupID = selectedItem.date else {
       return
     }
 
-    store.loadBackupLog(systemID: definition.id, backupID: backupID)
+    store.loadBackupDetails(systemID: definition.id, backupID: backupID)
   }
 
   private func logText(for item: BackupListItem) -> String {
