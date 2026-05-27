@@ -130,7 +130,7 @@ final class BackupAgentStore: ObservableObject {
   }
 
   private func applyLoadedPageData(_ pageData: BackupPageData, systemID: BackupSystemID) {
-    runs = runs.filter(\.isRunning)
+    runs = runs.filter { $0.isRunning || $0.operation == .restore }
 
     restoreDates[systemID] = pageData.restoreDates
     statuses[systemID] = pageData.status

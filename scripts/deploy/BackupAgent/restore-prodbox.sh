@@ -11,10 +11,35 @@ REMOTE_SANDBOX_APPS="/home/brain-sandbox/apps/"
 REMOTE_SANDBOX_SKILLS="/home/brain-sandbox/skills/"
 REMOTE_SANDBOX_IMAGES="/home/brain-sandbox/upload_images/"
 APP_NAME="brain"
+APP_STOPPED="0"
 
 RUN_ID=""
 FILTER=""
 ASSUME_YES="0"
+
+restart_app() {
+  local exit_status=$?
+
+  if [ "$APP_STOPPED" != "1" ]; then
+    return "$exit_status"
+  fi
+
+  echo ""
+  echo "Starting brain app on remote..."
+  set +e
+  ssh "$REMOTE_HOST" "sudo systemctl start $APP_NAME"
+  local start_status=$?
+  set -e
+
+  APP_STOPPED="0"
+  if [ "$start_status" -ne 0 ]; then
+    return "$start_status"
+  fi
+
+  return "$exit_status"
+}
+
+trap restart_app EXIT
 
 for arg in "$@"; do
   case "$arg" in
@@ -140,6 +165,7 @@ restore_directory() {
 echo ""
 echo "Stopping brain app on remote..."
 ssh "$REMOTE_HOST" "sudo systemctl stop $APP_NAME"
+APP_STOPPED="1"
 
 if selected "--db-only"; then
   if [ ! -f "$DB_FILE" ]; then
@@ -173,8 +199,8 @@ if selected "--sandbox-images-only"; then
 fi
 
 echo ""
-echo "Starting brain app on remote..."
-ssh "$REMOTE_HOST" "sudo systemctl start $APP_NAME"
+restart_app
+trap - EXIT
 
 echo ""
 echo "=== Restore completed ==="

@@ -23,11 +23,11 @@ struct BackupAgentView: View {
   }
 
   private var selectedItem: BackupListItem? {
-    backupItems.first { $0.id == selectedItemID }
+    activityItems.first { $0.id == selectedItemID }
   }
 
   private var selectedComponents: [BackupComponentStatus] {
-    guard let selectedItem, let backupID = selectedItem.date else {
+    guard let selectedItem, selectedItem.operation == .backup, let backupID = selectedItem.date else {
       return []
     }
 
@@ -38,21 +38,27 @@ struct BackupAgentView: View {
     definition.restoreOptions.first { $0.id == restoreOptionID } ?? definition.restoreOptions[0]
   }
 
-  private var backupItems: [BackupListItem] {
+  private var activityItems: [BackupListItem] {
     let snapshotIDs = Set(store.availableRestoreDates(for: definition.id))
-    let runs = store.runs(for: definition.id).filter { $0.operation == .backup }
-    let runBackupIDs = Set(runs.map { Self.runIDFormatter.string(from: $0.startedAt) })
+    let runs = store.runs(for: definition.id)
+    let runBackupIDs = Set(
+      runs
+        .filter { $0.operation == .backup }
+        .map { Self.runIDFormatter.string(from: $0.startedAt) }
+    )
 
     let runItems = runs.map { run in
-      let backupID = Self.runIDFormatter.string(from: run.startedAt)
+      let backupID = run.operation == .backup ? Self.runIDFormatter.string(from: run.startedAt) : nil
       return BackupListItem(
         id: "run-\(run.id.uuidString)",
-        title: backupID,
-        subtitle: "\(run.status.title) · \(Self.timeFormatter.string(from: run.startedAt))",
+        title: title(for: run, backupID: backupID),
+        subtitle: "\(run.operation.title) · \(run.status.title) · \(Self.timeFormatter.string(from: run.startedAt))",
         date: backupID,
         runID: run.id,
+        operation: run.operation,
         status: run.status,
-        canRestore: snapshotIDs.contains(backupID) && run.status != .running
+        canRestore: run.operation == .backup && backupID.map { snapshotIDs.contains($0) } == true && run.status != .running,
+        sortDate: run.startedAt
       )
     }
 
@@ -66,17 +72,22 @@ struct BackupAgentView: View {
           subtitle: "Snapshot",
           date: backupID,
           runID: nil,
+          operation: .backup,
           status: .success,
-          canRestore: true
+          canRestore: true,
+          sortDate: Self.date(fromRunID: backupID) ?? .distantPast
         )
       }
 
     return (runItems + snapshotItems).sorted { lhs, rhs in
-      if lhs.status == .running {
-        return true
+      let lhsIsRunning = lhs.status == .running
+      let rhsIsRunning = rhs.status == .running
+      if lhsIsRunning != rhsIsRunning {
+        return lhsIsRunning
       }
-      if rhs.status == .running {
-        return false
+
+      if lhs.sortDate != rhs.sortDate {
+        return lhs.sortDate > rhs.sortDate
       }
 
       return lhs.title > rhs.title
@@ -107,7 +118,7 @@ struct BackupAgentView: View {
       ensureSelection()
       loadSelectedBackupDetails()
     }
-    .onChange(of: backupItems) {
+    .onChange(of: activityItems) {
       ensureSelection()
       loadSelectedBackupDetails()
     }
@@ -124,7 +135,9 @@ struct BackupAgentView: View {
           return
         }
 
-        _ = store.runRestore(systemID: definition.id, date: date, option: restoreOption)
+        if let runID = store.runRestore(systemID: definition.id, date: date, option: restoreOption) {
+          selectedItemID = "run-\(runID.uuidString)"
+        }
       }
 
       Button("Cancel", role: .cancel) {}
@@ -237,10 +250,10 @@ struct BackupAgentView: View {
 
   private var backupList: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text("Available Backups")
+      Text("Backups & Restores")
         .font(.headline)
 
-      if isLoading && backupItems.isEmpty {
+      if isLoading && activityItems.isEmpty {
         VStack(spacing: 8) {
           ProgressView()
             .controlSize(.small)
@@ -251,7 +264,7 @@ struct BackupAgentView: View {
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
       } else {
         List(selection: $selectedItemID) {
-          ForEach(backupItems) { item in
+          ForEach(activityItems) { item in
             BackupListRow(item: item)
               .tag(item.id)
           }
@@ -295,7 +308,9 @@ struct BackupAgentView: View {
           }
         }
 
-        componentStatus(for: selectedItem)
+        if selectedItem.operation == .backup {
+          componentStatus(for: selectedItem)
+        }
 
         VStack(alignment: .leading, spacing: 10) {
           Text("Logs")
@@ -365,11 +380,11 @@ struct BackupAgentView: View {
   }
 
   private func ensureSelection() {
-    if let selectedItemID, backupItems.contains(where: { $0.id == selectedItemID }) {
+    if let selectedItemID, activityItems.contains(where: { $0.id == selectedItemID }) {
       return
     }
 
-    selectedItemID = backupItems.first?.id
+    selectedItemID = activityItems.first?.id
   }
 
   private func loadSelectedBackupDetails() {
@@ -390,6 +405,24 @@ struct BackupAgentView: View {
     }
 
     return "No logs found."
+  }
+
+  private func title(for run: BackupRun, backupID: String?) -> String {
+    switch run.operation {
+    case .backup:
+      return backupID ?? run.detail
+    case .restore:
+      let prefix = "\(definition.title) restore: "
+      if run.detail.hasPrefix(prefix) {
+        return "Restore \(run.detail.dropFirst(prefix.count))"
+      }
+
+      return run.detail
+    }
+  }
+
+  private static func date(fromRunID runID: String) -> Date? {
+    runIDFormatter.date(from: String(runID.prefix(15)))
   }
 
   private static let runIDFormatter: DateFormatter = {
@@ -413,8 +446,10 @@ private struct BackupListItem: Hashable, Identifiable {
   let subtitle: String
   let date: String?
   let runID: BackupRun.ID?
+  let operation: BackupOperation
   let status: BackupRunStatus
   let canRestore: Bool
+  let sortDate: Date
 }
 
 private struct BackupListRow: View {
@@ -441,15 +476,19 @@ private struct BackupListRow: View {
   }
 
   private var iconName: String {
+    if item.operation == .restore {
+      return "arrow.uturn.backward.circle"
+    }
+
     switch item.status {
     case .running:
-      "clock.arrow.circlepath"
+      return "clock.arrow.circlepath"
     case .success:
-      "checkmark.circle.fill"
+      return "checkmark.circle.fill"
     case .failed:
-      "xmark.circle.fill"
+      return "xmark.circle.fill"
     case .stopped:
-      "stop.circle.fill"
+      return "stop.circle.fill"
     }
   }
 
