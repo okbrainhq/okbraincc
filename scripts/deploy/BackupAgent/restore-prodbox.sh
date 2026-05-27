@@ -86,6 +86,10 @@ selected() {
   [ -z "$FILTER" ] || [ "$FILTER" = "$1" ]
 }
 
+directory_has_entries() {
+  find "$1" -mindepth 1 -maxdepth 1 -print -quit | grep -q .
+}
+
 resolve_run_dir
 
 DATA_ROOT="$RUN_DIR/data"
@@ -117,9 +121,27 @@ echo "This will restore to $REMOTE_HOST:"
 if selected "--db-only"; then echo "  - Database: $DB_FILE -> $REMOTE_DB"; fi
 if selected "--data-only"; then echo "  - brain-data: $DATA_DIR/ -> $REMOTE_DATA"; fi
 if selected "--uploads-only"; then echo "  - brain-uploads: $UPLOADS_DIR/ -> $REMOTE_UPLOADS"; fi
-if selected "--sandbox-only"; then echo "  - brain-sandbox/apps: $SANDBOX_APPS_DIR/ -> $REMOTE_SANDBOX_APPS"; fi
-if selected "--sandbox-skills-only"; then echo "  - brain-sandbox/skills: $SANDBOX_SKILLS_DIR/ -> $REMOTE_SANDBOX_SKILLS"; fi
-if selected "--sandbox-images-only"; then echo "  - brain-sandbox/upload_images: $SANDBOX_IMAGES_DIR/ -> $REMOTE_SANDBOX_IMAGES"; fi
+if selected "--sandbox-only"; then
+  if [ -d "$SANDBOX_APPS_DIR" ] && directory_has_entries "$SANDBOX_APPS_DIR"; then
+    echo "  - brain-sandbox/apps: $SANDBOX_APPS_DIR/ -> $REMOTE_SANDBOX_APPS"
+  else
+    echo "  - brain-sandbox/apps: skipped (not present in backup)"
+  fi
+fi
+if selected "--sandbox-skills-only"; then
+  if [ -d "$SANDBOX_SKILLS_DIR" ] && directory_has_entries "$SANDBOX_SKILLS_DIR"; then
+    echo "  - brain-sandbox/skills: $SANDBOX_SKILLS_DIR/ -> $REMOTE_SANDBOX_SKILLS"
+  else
+    echo "  - brain-sandbox/skills: skipped (not present in backup)"
+  fi
+fi
+if selected "--sandbox-images-only"; then
+  if [ -d "$SANDBOX_IMAGES_DIR" ] && directory_has_entries "$SANDBOX_IMAGES_DIR"; then
+    echo "  - brain-sandbox/upload_images: $SANDBOX_IMAGES_DIR/ -> $REMOTE_SANDBOX_IMAGES"
+  else
+    echo "  - brain-sandbox/upload_images: skipped (not present in backup)"
+  fi
+fi
 
 if [ "$ASSUME_YES" != "1" ]; then
   echo ""
@@ -141,9 +163,15 @@ restore_directory() {
   local destination="$3"
   local rsync_path="${4:-}"
   local chown_target="${5:-}"
+  local skip_empty="${6:-0}"
 
   if [ ! -d "$source_dir" ]; then
     echo "Skipping $title restore: $source_dir not found"
+    return
+  fi
+
+  if [ "$skip_empty" = "1" ] && ! directory_has_entries "$source_dir"; then
+    echo "Skipping $title restore: $source_dir is empty"
     return
   fi
 
@@ -187,15 +215,15 @@ if selected "--uploads-only"; then
 fi
 
 if selected "--sandbox-only"; then
-  restore_directory "brain-sandbox/apps" "$SANDBOX_APPS_DIR" "$REMOTE_SANDBOX_APPS" "sudo rsync" "/home/brain-sandbox/apps/"
+  restore_directory "brain-sandbox/apps" "$SANDBOX_APPS_DIR" "$REMOTE_SANDBOX_APPS" "sudo rsync" "/home/brain-sandbox/apps/" "1"
 fi
 
 if selected "--sandbox-skills-only"; then
-  restore_directory "brain-sandbox/skills" "$SANDBOX_SKILLS_DIR" "$REMOTE_SANDBOX_SKILLS" "sudo rsync" "/home/brain-sandbox/skills/"
+  restore_directory "brain-sandbox/skills" "$SANDBOX_SKILLS_DIR" "$REMOTE_SANDBOX_SKILLS" "sudo rsync" "/home/brain-sandbox/skills/" "1"
 fi
 
 if selected "--sandbox-images-only"; then
-  restore_directory "brain-sandbox/upload_images" "$SANDBOX_IMAGES_DIR" "$REMOTE_SANDBOX_IMAGES" "sudo rsync" "/home/brain-sandbox/upload_images/"
+  restore_directory "brain-sandbox/upload_images" "$SANDBOX_IMAGES_DIR" "$REMOTE_SANDBOX_IMAGES" "sudo rsync" "/home/brain-sandbox/upload_images/" "1"
 fi
 
 echo ""

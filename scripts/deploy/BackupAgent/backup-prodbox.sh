@@ -28,9 +28,6 @@ STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 mkdir -p "$DATA_DIR/db"
 mkdir -p "$DATA_DIR/brain-data"
 mkdir -p "$DATA_DIR/brain-uploads"
-mkdir -p "$DATA_DIR/brain-sandbox/apps"
-mkdir -p "$DATA_DIR/brain-sandbox/skills"
-mkdir -p "$DATA_DIR/brain-sandbox/upload-images"
 
 write_metadata() {
   cat >"$METADATA_FILE" <<EOF
