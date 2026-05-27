@@ -3,6 +3,7 @@ import Foundation
 struct BackupPageData {
   let status: BackupSystemStatus
   let restoreDates: [String]
+  let restoreRuns: [BackupRun]
 }
 
 struct BackupRunDetails {
@@ -30,8 +31,9 @@ enum BackupFilesystemLoader {
     let runIDs = recentRunIDs(for: definition, limit: limit)
     let newestRunURL = newestRunURL(for: definition, runIDs: runIDs)
     let status = buildStatus(for: definition, newestRunURL: newestRunURL, runIDs: runIDs)
+    let restoreRuns = recentRestoreRuns(for: definition, limit: limit)
 
-    return BackupPageData(status: status, restoreDates: runIDs)
+    return BackupPageData(status: status, restoreDates: runIDs, restoreRuns: restoreRuns)
   }
 
   static func loadRunDetails(for definition: BackupSystemDefinition, runID: String) -> BackupRunDetails {
@@ -78,6 +80,40 @@ enum BackupFilesystemLoader {
         return values?.isDirectory == true ? url.lastPathComponent : nil
       }
       .sorted(by: >)
+      .prefix(limit)
+      .map { $0 }
+  }
+
+  private static func recentRestoreRuns(for definition: BackupSystemDefinition, limit: Int) -> [BackupRun] {
+    guard let entries = try? FileManager.default.contentsOfDirectory(
+      at: definition.restoreHistoryDirectoryURL,
+      includingPropertiesForKeys: [.isRegularFileKey],
+      options: [.skipsHiddenFiles]
+    ) else {
+      return []
+    }
+
+    return entries
+      .filter { $0.pathExtension == "json" }
+      .compactMap { url -> BackupRun? in
+        guard
+          let data = try? Data(contentsOf: url),
+          var run = try? restoreRunDecoder.decode(BackupRun.self, from: data),
+          run.systemID == definition.id,
+          run.operation == .restore
+        else {
+          return nil
+        }
+
+        if run.status == .running {
+          run.status = .stopped
+          run.finishedAt = run.finishedAt ?? run.startedAt
+          run.log.append("\nRestore was still marked running when the app loaded this saved session.\n")
+        }
+
+        return run
+      }
+      .sorted { $0.startedAt > $1.startedAt }
       .prefix(limit)
       .map { $0 }
   }
@@ -353,4 +389,6 @@ enum BackupFilesystemLoader {
     formatter.dateFormat = "yyyy-MM-dd-HHmm"
     return formatter
   }()
+
+  private static let restoreRunDecoder = JSONDecoder()
 }

@@ -130,7 +130,33 @@ final class BackupAgentStore: ObservableObject {
   }
 
   private func applyLoadedPageData(_ pageData: BackupPageData, systemID: BackupSystemID) {
-    runs = runs.filter { $0.isRunning || $0.operation == .restore }
+    let currentRuns = runs
+    let loadedRestoreRunIDs = Set(pageData.restoreRuns.map(\.id))
+    let loadedRestoreRuns = pageData.restoreRuns.map { loadedRun in
+      currentRuns.first { currentRun in
+        currentRun.id == loadedRun.id &&
+          (currentRun.isRunning || currentRun.log.count >= loadedRun.log.count)
+      } ?? loadedRun
+    }
+    let transientRuns = currentRuns.filter { run in
+      if run.systemID == systemID {
+        if run.operation == .restore {
+          return !loadedRestoreRunIDs.contains(run.id)
+        }
+
+        return run.isRunning
+      }
+
+      return run.isRunning || run.operation == .restore
+    }
+
+    runs = (transientRuns + loadedRestoreRuns).sorted { lhs, rhs in
+      if lhs.isRunning != rhs.isRunning {
+        return lhs.isRunning
+      }
+
+      return lhs.startedAt > rhs.startedAt
+    }
 
     restoreDates[systemID] = pageData.restoreDates
     statuses[systemID] = pageData.status
@@ -468,6 +494,7 @@ final class BackupAgentStore: ObservableObject {
 
     runs.insert(run, at: 0)
     activeRuns[definition.id] = run.id
+    persistRunIfNeeded(run)
 
     Task {
       do {
@@ -528,6 +555,7 @@ final class BackupAgentStore: ObservableObject {
     if runs[index].log.count > 120_000 {
       runs[index].log.removeFirst(runs[index].log.count - 120_000)
     }
+    persistRunIfNeeded(runs[index])
   }
 
   private func finish(
@@ -551,8 +579,33 @@ final class BackupAgentStore: ObservableObject {
     stoppedRunIDs.remove(runID)
     schedulerLastBackupDates[systemID] = runs[index].finishedAt
     schedulerAnchorLoadedSystemIDs.insert(systemID)
+    persistRunIfNeeded(runs[index])
 
     loadBackupData(systemID: systemID, force: true)
+  }
+
+  private func persistRunIfNeeded(_ run: BackupRun) {
+    guard !isMockMode, run.operation == .restore else {
+      return
+    }
+
+    Self.persistRestoreRun(run)
+  }
+
+  private static func persistRestoreRun(_ run: BackupRun) {
+    let definition = BackupSystemDefinition.definition(for: run.systemID)
+    let directoryURL = definition.restoreHistoryDirectoryURL
+    let jsonURL = directoryURL.appendingPathComponent("\(run.id.uuidString).json", isDirectory: false)
+    let logURL = directoryURL.appendingPathComponent("\(run.id.uuidString).log", isDirectory: false)
+
+    do {
+      try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+      let data = try restoreRunEncoder.encode(run)
+      try data.write(to: jsonURL, options: [.atomic])
+      try run.log.write(to: logURL, atomically: true, encoding: .utf8)
+    } catch {
+      // Restore history is best-effort; live logs still remain visible for the current app session.
+    }
   }
 
   private static func detectMockMode() -> Bool {
@@ -665,6 +718,12 @@ final class BackupAgentStore: ObservableObject {
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.dateFormat = "yyyy-MM-dd-HHmm"
     return formatter
+  }()
+
+  private static let restoreRunEncoder: JSONEncoder = {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    return encoder
   }()
 
   private static func durationLabel(for interval: TimeInterval) -> String {

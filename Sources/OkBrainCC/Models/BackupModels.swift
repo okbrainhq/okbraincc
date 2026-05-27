@@ -102,6 +102,10 @@ struct BackupSystemDefinition: Hashable, Identifiable {
     FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(backupDirectoryName, isDirectory: true)
   }
 
+  var restoreHistoryDirectoryURL: URL {
+    backupDirectoryURL.appendingPathComponent("restore-runs", isDirectory: true)
+  }
+
   var scheduleLabel: String {
     String(format: "%02d:%02d", scheduleHour, scheduleMinute)
   }
