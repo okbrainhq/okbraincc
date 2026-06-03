@@ -20,6 +20,8 @@ struct DetailView: View {
       switch section {
       case .startOKRun:
         StartOKRunView()
+      case .okProxyClient:
+        OKProxyClientView()
       case .backupProdbox:
         BackupAgentView(definition: .prodbox)
       case .backupSandbox:

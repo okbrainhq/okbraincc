@@ -2,6 +2,7 @@ import Foundation
 
 enum AppSection: String, CaseIterable, Hashable, Identifiable {
   case startOKRun
+  case okProxyClient
   case backupProdbox
   case backupSandbox
 
@@ -13,6 +14,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     switch self {
     case .startOKRun:
       "Start OKRun"
+    case .okProxyClient:
+      "OKProxy Client"
     case .backupProdbox:
       "Backup: Prodbox"
     case .backupSandbox:
@@ -24,6 +27,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     switch self {
     case .startOKRun:
       "play.circle"
+    case .okProxyClient:
+      "network"
     case .backupProdbox:
       "externaldrive"
     case .backupSandbox:

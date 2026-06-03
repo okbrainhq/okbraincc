@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     OKRunLauncher.launchConfiguredAppIfNeeded()
     Task { @MainActor in
       BackupAgentStore.shared.startScheduler()
+      OKProxyClientStore.shared.startIfEnabled()
     }
   }
 
