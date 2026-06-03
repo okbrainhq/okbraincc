@@ -6,30 +6,38 @@ struct OKProxyClientView: View {
   @State private var draft = OKProxySettings.defaults
   @State private var isSetupExpanded = false
   @State private var isConfigurationExpanded = false
+  @State private var didScrollPanelToBottom = false
+  private let panelBottomID = "okproxy-panel-bottom"
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 18) {
-        header
-        nodeWarning
-        controlsSection
-        setupSection
-        configurationSection
-        logsSection
-        operationOutputSection
+    ScrollViewReader { proxy in
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          header
+          nodeWarning
+          controlsSection
+          setupSection
+          configurationSection
+          logsSection
+          operationOutputSection
+          Color.clear
+            .frame(height: 1)
+            .id(panelBottomID)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
       }
-      .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    .onAppear {
-      draft = store.settings
-      store.refreshNodeStatus()
-      store.refreshInstallationStatus()
-      store.refreshLogs()
-      syncSectionExpansion()
-    }
-    .onChange(of: store.isInstalled) { _, _ in
-      syncSectionExpansion()
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+      .onAppear {
+        draft = store.settings
+        store.refreshNodeStatus()
+        store.refreshInstallationStatus()
+        store.refreshLogs()
+        syncSectionExpansion()
+        scrollPanelToBottomOnInitialLoad(proxy)
+      }
+      .onChange(of: store.isInstalled) { _, _ in
+        syncSectionExpansion()
+      }
     }
   }
 
@@ -38,7 +46,7 @@ struct OKProxyClientView: View {
       Text("OKProxy Client")
         .font(.title2.weight(.semibold))
 
-      Text("Run the OKProxy client from a fixed local checkout.")
+      Text("Run the OKProxy client from a cloned local checkout.")
         .foregroundStyle(.secondary)
     }
   }
@@ -165,9 +173,10 @@ struct OKProxyClientView: View {
     ) {
       VStack(alignment: .leading, spacing: 8) {
         labeledValue("Repository", value: OKProxySettings.repoURL)
-        labeledValue("Fixed location", value: OKProxySettings.installURL.path)
+        labeledValue("Cloned location", value: OKProxySettings.installURL.path)
         labeledValue("Node.js", value: store.nodeStatus.message)
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
 
       HStack(spacing: 10) {
         if store.isInstalled {
@@ -202,6 +211,7 @@ struct OKProxyClientView: View {
           Label("Open Folder", systemImage: "folder")
         }
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -289,13 +299,10 @@ struct OKProxyClientView: View {
         }
       }
 
-      ScrollView {
-        Text(store.latestLogLines.isEmpty ? "No OKProxy logs yet." : store.latestLogLines)
-          .font(.system(.caption, design: .monospaced))
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .topLeading)
-          .padding(12)
-      }
+      TailTextScrollView(
+        text: store.latestLogLines,
+        emptyText: "No OKProxy logs yet."
+      )
       .frame(minHeight: 220, idealHeight: 300, maxHeight: 420)
       .background(.background, in: RoundedRectangle(cornerRadius: 8))
     }
@@ -305,13 +312,10 @@ struct OKProxyClientView: View {
   private var operationOutputSection: some View {
     if store.isBusy || !store.lastOperationOutput.isEmpty {
       sectionCard(title: "Setup / Update Output", systemImage: "terminal") {
-        ScrollView {
-          Text(store.lastOperationOutput.isEmpty ? "No setup/update output yet." : store.lastOperationOutput)
-            .font(.system(.caption, design: .monospaced))
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .padding(12)
-        }
+        TailTextScrollView(
+          text: store.lastOperationOutput,
+          emptyText: "No setup/update output yet."
+        )
         .frame(minHeight: 120, idealHeight: 180, maxHeight: 260)
         .background(.background, in: RoundedRectangle(cornerRadius: 8))
       }
@@ -376,6 +380,15 @@ struct OKProxyClientView: View {
     isConfigurationExpanded = !configurationCanCollapse
   }
 
+  private func scrollPanelToBottomOnInitialLoad(_ proxy: ScrollViewProxy) {
+    guard !didScrollPanelToBottom else { return }
+    didScrollPanelToBottom = true
+
+    DispatchQueue.main.async {
+      proxy.scrollTo(panelBottomID, anchor: .bottom)
+    }
+  }
+
   private func sectionCard<Content: View>(
     title: String,
     systemImage: String,
@@ -401,27 +414,43 @@ struct OKProxyClientView: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 12) {
       if isCollapsible {
-        DisclosureGroup(isExpanded: isExpanded) {
-          content()
-            .padding(.top, 10)
+        Button {
+          withAnimation(.easeInOut(duration: 0.18)) {
+            isExpanded.wrappedValue.toggle()
+          }
         } label: {
-          HStack {
+          HStack(spacing: 8) {
+            Image(systemName: isExpanded.wrappedValue ? "chevron.down" : "chevron.right")
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(.secondary)
+              .frame(width: 12)
+
             Label(title, systemImage: systemImage)
               .font(.headline)
 
-            Spacer()
-
-            Text(isExpanded.wrappedValue ? "Hide" : "Show")
-              .font(.caption.weight(.semibold))
-              .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
           .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isExpanded.wrappedValue ? "Expanded" : "Collapsed")
+
+        if isExpanded.wrappedValue {
+          VStack(alignment: .leading, spacing: 12) {
+            content()
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.top, 10)
         }
       } else {
         Label(title, systemImage: systemImage)
           .font(.headline)
 
-        content()
+        VStack(alignment: .leading, spacing: 12) {
+          content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
     .padding(16)
@@ -485,6 +514,147 @@ struct OKProxyClientView: View {
 
     if panel.runModal() == .OK, let url = panel.url {
       draft[keyPath: keyPath] = url.path
+    }
+  }
+}
+
+private struct TailTextScrollView: NSViewRepresentable {
+  let text: String
+  let emptyText: String
+
+  func makeCoordinator() -> Coordinator {
+    Coordinator()
+  }
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let scrollView = NSScrollView()
+    scrollView.borderType = .noBorder
+    scrollView.drawsBackground = false
+    scrollView.hasVerticalScroller = true
+    scrollView.hasHorizontalScroller = false
+    scrollView.autohidesScrollers = true
+
+    let textView = NSTextView()
+    textView.drawsBackground = false
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.isRichText = false
+    textView.importsGraphics = false
+    textView.font = Self.font
+    textView.textColor = .labelColor
+    textView.textContainerInset = NSSize(width: 12, height: 12)
+    textView.textContainer?.lineFragmentPadding = 0
+    textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(
+      width: scrollView.contentSize.width,
+      height: CGFloat.greatestFiniteMagnitude
+    )
+    textView.minSize = NSSize(width: 0, height: 0)
+    textView.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude,
+      height: CGFloat.greatestFiniteMagnitude
+    )
+    textView.isHorizontallyResizable = false
+    textView.isVerticallyResizable = true
+    textView.autoresizingMask = [.width]
+
+    scrollView.documentView = textView
+    scrollView.contentView.postsBoundsChangedNotifications = true
+    NotificationCenter.default.addObserver(
+      context.coordinator,
+      selector: #selector(Coordinator.scrollBoundsDidChange(_:)),
+      name: NSView.boundsDidChangeNotification,
+      object: scrollView.contentView
+    )
+
+    return scrollView
+  }
+
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    guard let textView = scrollView.documentView as? NSTextView else { return }
+
+    let displayText = text.isEmpty ? emptyText : text
+    let shouldScrollToBottom = context.coordinator.lastRenderedText.isEmpty || context.coordinator.isFollowingTail
+
+    textView.font = Self.font
+    textView.textColor = .labelColor
+    textView.textContainer?.containerSize = NSSize(
+      width: scrollView.contentSize.width,
+      height: CGFloat.greatestFiniteMagnitude
+    )
+
+    guard context.coordinator.lastRenderedText != displayText else {
+      if shouldScrollToBottom {
+        DispatchQueue.main.async {
+          context.coordinator.scrollToBottom(scrollView)
+        }
+      }
+      return
+    }
+
+    textView.textStorage?.setAttributedString(
+      NSAttributedString(
+        string: displayText,
+        attributes: [
+          .font: Self.font,
+          .foregroundColor: NSColor.labelColor
+        ]
+      )
+    )
+    context.coordinator.lastRenderedText = displayText
+
+    if shouldScrollToBottom {
+      DispatchQueue.main.async {
+        context.coordinator.scrollToBottom(scrollView)
+      }
+    }
+  }
+
+  static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
+    NotificationCenter.default.removeObserver(
+      coordinator,
+      name: NSView.boundsDidChangeNotification,
+      object: nsView.contentView
+    )
+  }
+
+  private static let font = NSFont.monospacedSystemFont(
+    ofSize: NSFont.smallSystemFontSize,
+    weight: .regular
+  )
+
+  final class Coordinator: NSObject {
+    var isFollowingTail = true
+    var isProgrammaticScroll = false
+    var lastRenderedText = ""
+
+    @objc func scrollBoundsDidChange(_ notification: Notification) {
+      guard !isProgrammaticScroll,
+            let clipView = notification.object as? NSClipView,
+            let textView = clipView.documentView as? NSTextView else {
+        return
+      }
+
+      updateFollowingTailState(from: textView)
+    }
+
+    func scrollToBottom(_ scrollView: NSScrollView) {
+      guard let textView = scrollView.documentView as? NSTextView else { return }
+
+      isProgrammaticScroll = true
+      textView.layoutSubtreeIfNeeded()
+      textView.scrollToEndOfDocument(nil)
+      scrollView.reflectScrolledClipView(scrollView.contentView)
+      isFollowingTail = true
+
+      DispatchQueue.main.async { [weak self] in
+        self?.isProgrammaticScroll = false
+      }
+    }
+
+    private func updateFollowingTailState(from textView: NSTextView) {
+      let distanceFromBottom = textView.bounds.maxY - textView.visibleRect.maxY
+      isFollowingTail = distanceFromBottom <= 24
     }
   }
 }
