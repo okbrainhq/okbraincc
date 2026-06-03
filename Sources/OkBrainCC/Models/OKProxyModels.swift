@@ -170,8 +170,6 @@ enum OKProxyClientStatus: Equatable {
     switch self {
     case .failed(let message):
       message
-    case .busy(let message):
-      message
     default:
       nil
     }

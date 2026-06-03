@@ -2,19 +2,30 @@ import Foundation
 
 enum OKProxyCommandRunner {
   static func installNodeJS(
+    forceUpdate: Bool = false,
     onOutput: @escaping @Sendable (String) -> Void
   ) async throws -> OKProxyCommandResult {
+    let forceUpdateFlag = forceUpdate ? "1" : "0"
     let command = #"""
 set -eo pipefail
 
 LOCAL_NODE="$HOME/.local/bin/node"
+FORCE_UPDATE="__FORCE_UPDATE__"
 
-if [ -x "$LOCAL_NODE" ]; then
+if [ "$FORCE_UPDATE" != "1" ] && [ -x "$LOCAL_NODE" ]; then
   CURRENT_VERSION=$("$LOCAL_NODE" -v)
   CURRENT_MAJOR=$(echo "$CURRENT_VERSION" | sed -E 's/^v([0-9]+).*/\1/')
   if [ -n "$CURRENT_MAJOR" ] && [ "$CURRENT_MAJOR" -ge 20 ]; then
     echo "Node.js is already installed: $CURRENT_VERSION at $LOCAL_NODE"
     exit 0
+  fi
+fi
+
+if [ "$FORCE_UPDATE" = "1" ]; then
+  if [ -x "$LOCAL_NODE" ]; then
+    echo "Updating Node.js from $("$LOCAL_NODE" -v) at $LOCAL_NODE..."
+  else
+    echo "Installing latest Node.js into $HOME/.local..."
   fi
 fi
 
@@ -69,7 +80,18 @@ if [ -z "$EXPECTED_HASH" ] || [ "$EXPECTED_HASH" != "$ACTUAL_HASH" ]; then
 fi
 
 mkdir -p "$HOME/.local"
-rm -rf "$HOME/.local/lib/node" "$HOME/.local/bin/node" "$HOME/.local/bin/npm" "$HOME/.local/bin/npx" 2>/dev/null || true
+rm -rf \
+  "$HOME/.local/bin/node" \
+  "$HOME/.local/bin/npm" \
+  "$HOME/.local/bin/npx" \
+  "$HOME/.local/bin/corepack" \
+  "$HOME/.local/include/node" \
+  "$HOME/.local/lib/node" \
+  "$HOME/.local/lib/node_modules/npm" \
+  "$HOME/.local/lib/node_modules/corepack" \
+  "$HOME/.local/share/doc/node" \
+  "$HOME/.local/share/man/man1/node.1" \
+  2>/dev/null || true
 
 echo "Installing Node.js into $HOME/.local..."
 tar -xz -C "$HOME/.local" --strip-components=1 -f "$TEMP_DIR/$NODE_TARBALL"
@@ -83,7 +105,11 @@ echo "Node.js installed successfully: $("$LOCAL_NODE" -v)"
 echo "npm version: $("$HOME/.local/bin/npm" -v)"
 """#
 
-    return try await runShell(command, currentDirectory: nil, onOutput: onOutput)
+    return try await runShell(
+      command.replacingOccurrences(of: "__FORCE_UPDATE__", with: forceUpdateFlag),
+      currentDirectory: nil,
+      onOutput: onOutput
+    )
   }
 
   static func downloadAndSetup(

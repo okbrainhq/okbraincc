@@ -133,35 +133,82 @@ struct OKProxyClientView: View {
   }
 
   private var statusBadges: some View {
-    HStack(spacing: 8) {
-      Label(store.status.title, systemImage: store.status.systemImage)
-        .foregroundStyle(statusColor)
+    VStack(alignment: .trailing, spacing: 6) {
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 8) {
+          statusPill
+          nodeBadge
+          installationBadge
+        }
 
-      if store.isBusy || store.status == .starting || store.status == .stopping {
+        VStack(alignment: .trailing, spacing: 6) {
+          statusPill
+
+          HStack(spacing: 8) {
+            nodeBadge
+            installationBadge
+          }
+        }
+      }
+
+      if let detail = statusDetailText {
+        Text(detail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.trailing)
+          .lineLimit(3)
+          .frame(maxWidth: 420, alignment: .trailing)
+      }
+    }
+  }
+
+  private var statusPill: some View {
+    HStack(spacing: 6) {
+      Label(store.status.title, systemImage: store.status.systemImage)
+
+      if isShowingStatusSpinner {
         ProgressView()
           .controlSize(.small)
+          .scaleEffect(0.78)
       }
-
-      if let detail = store.status.detail, !detail.isEmpty {
-        Text(detail)
-          .foregroundStyle(.secondary)
-          .lineLimit(2)
-      }
-
-      Text(store.nodeStatus.version ?? "Node.js needed")
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(store.nodeStatus.isUsable ? .green.opacity(0.15) : .orange.opacity(0.15), in: Capsule())
-        .foregroundStyle(store.nodeStatus.isUsable ? .green : .orange)
-
-      Text(store.isInstalled ? "OKProxy installed" : "OKProxy not installed")
-        .font(.caption.weight(.semibold))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(store.isInstalled ? .green.opacity(0.15) : .orange.opacity(0.15), in: Capsule())
-        .foregroundStyle(store.isInstalled ? .green : .orange)
     }
+    .font(.caption.weight(.semibold))
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .background(statusColor.opacity(0.14), in: Capsule())
+    .foregroundStyle(statusColor)
+  }
+
+  private var nodeBadge: some View {
+    Text(store.nodeStatus.version ?? "Node.js needed")
+      .font(.caption.weight(.semibold))
+      .padding(.horizontal, 8)
+      .padding(.vertical, 3)
+      .background(store.nodeStatus.isUsable ? .green.opacity(0.15) : .orange.opacity(0.15), in: Capsule())
+      .foregroundStyle(store.nodeStatus.isUsable ? .green : .orange)
+  }
+
+  private var installationBadge: some View {
+    Text(store.isInstalled ? "OKProxy installed" : "OKProxy not installed")
+      .font(.caption.weight(.semibold))
+      .padding(.horizontal, 8)
+      .padding(.vertical, 3)
+      .background(store.isInstalled ? .green.opacity(0.15) : .orange.opacity(0.15), in: Capsule())
+      .foregroundStyle(store.isInstalled ? .green : .orange)
+  }
+
+  private var isShowingStatusSpinner: Bool {
+    store.isBusy || store.status == .starting || store.status == .stopping
+  }
+
+  private var statusDetailText: String? {
+    guard case .failed = store.status,
+          let detail = store.status.detail,
+          !detail.isEmpty else {
+      return nil
+    }
+
+    return detail
   }
 
   private var setupSection: some View {
@@ -196,6 +243,13 @@ struct OKProxyClientView: View {
           .buttonStyle(.borderedProminent)
           .disabled(setupDisabled)
         }
+
+        Button {
+          store.updateNodeJS()
+        } label: {
+          Label("Update Node.js", systemImage: "arrow.up.circle")
+        }
+        .disabled(nodeUpdateDisabled)
 
         Button {
           store.refreshNodeStatus()
@@ -332,6 +386,10 @@ struct OKProxyClientView: View {
 
   private var setupDisabled: Bool {
     store.isBusy || store.isClientRunning || !store.nodeStatus.isUsable
+  }
+
+  private var nodeUpdateDisabled: Bool {
+    store.isBusy || store.isClientRunning
   }
 
   private var configurationDisabled: Bool {

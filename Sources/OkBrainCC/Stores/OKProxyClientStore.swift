@@ -104,22 +104,33 @@ final class OKProxyClientStore: ObservableObject {
   }
 
   func installNodeJS() {
+    runNodeJSInstall(forceUpdate: false)
+  }
+
+  func updateNodeJS() {
+    runNodeJSInstall(forceUpdate: true)
+  }
+
+  private func runNodeJSInstall(forceUpdate: Bool) {
     guard !isBusy else {
       return
     }
 
+    let action = forceUpdate ? "update" : "install"
+    let title = forceUpdate ? "Updating Node.js" : "Installing Node.js"
+
     if isClientRunning {
-      appendOperationOutput("[OKProxy] Stop the client before installing Node.js.\n")
+      appendOperationOutput("[OKProxy] Stop the client before Node.js \(action).\n")
       return
     }
 
     isBusy = true
-    status = .busy("Installing Node.js")
-    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] Installing Node.js...\n"
+    status = .busy(title)
+    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] \(title)...\n"
 
     Task { @MainActor in
       do {
-        let result = try await OKProxyCommandRunner.installNodeJS { [weak self] text in
+        let result = try await OKProxyCommandRunner.installNodeJS(forceUpdate: forceUpdate) { [weak self] text in
           Task { @MainActor in
             self?.appendOperationOutput(text)
           }
@@ -127,18 +138,18 @@ final class OKProxyClientStore: ObservableObject {
 
         isBusy = false
         refreshNodeStatus()
-        appendOperationOutput("[OKProxy] Node.js install finished with exit code \(result.exitCode).\n")
+        appendOperationOutput("[OKProxy] Node.js \(action) finished with exit code \(result.exitCode).\n")
 
         if result.exitCode == 0, nodeStatus.isUsable {
           status = isEnabled ? .stopped : .disabled
         } else {
-          status = .failed("Node.js install exited with code \(result.exitCode).")
+          status = .failed("Node.js \(action) exited with code \(result.exitCode).")
         }
       } catch {
         isBusy = false
         refreshNodeStatus()
         status = .failed(error.localizedDescription)
-        appendOperationOutput("[OKProxy] Node.js install failed: \(error.localizedDescription)\n")
+        appendOperationOutput("[OKProxy] Node.js \(action) failed: \(error.localizedDescription)\n")
       }
     }
   }
