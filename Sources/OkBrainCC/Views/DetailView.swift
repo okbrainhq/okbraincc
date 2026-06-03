@@ -22,6 +22,8 @@ struct DetailView: View {
         StartOKRunView()
       case .okProxyClient:
         OKProxyClientView()
+      case .okRunLocalSwitch:
+        OKRunLocalSwitchView()
       case .backupProdbox:
         BackupAgentView(definition: .prodbox)
       case .backupSandbox:

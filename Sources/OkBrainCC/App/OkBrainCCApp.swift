@@ -1,19 +1,24 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
     OKRunLauncher.launchConfiguredAppIfNeeded()
-    Task { @MainActor in
-      BackupAgentStore.shared.startScheduler()
-      OKProxyClientStore.shared.startIfEnabled()
-    }
+    BackupAgentStore.shared.startScheduler()
+    OKProxyClientStore.shared.startIfEnabled()
+    OKRunLocalSwitchStore.shared.startIfEnabled()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    false
+    true
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    OKProxyClientStore.shared.stopForAppTermination()
+    OKRunLocalSwitchStore.shared.stopForAppTermination()
   }
 }
 

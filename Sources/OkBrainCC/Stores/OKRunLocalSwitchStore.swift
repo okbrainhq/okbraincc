@@ -2,13 +2,13 @@ import AppKit
 import Foundation
 
 @MainActor
-final class OKProxyClientStore: ObservableObject {
-  static let shared = OKProxyClientStore()
+final class OKRunLocalSwitchStore: ObservableObject {
+  static let shared = OKRunLocalSwitchStore()
 
-  @Published private(set) var settings: OKProxySettings
+  @Published private(set) var settings: OKRunLocalSwitchSettings
   @Published private(set) var isEnabled: Bool
   @Published private(set) var status: OKProxyClientStatus
-  @Published private(set) var nodeStatus: OKProxyNodeStatus
+  @Published private(set) var nodeStatus: OKRunLocalSwitchNodeStatus
   @Published private(set) var isInstalled = false
   @Published private(set) var isBusy = false
   @Published private(set) var latestLogLines = ""
@@ -33,12 +33,12 @@ final class OKProxyClientStore: ObservableObject {
     startLogRefreshTimer()
   }
 
-  var isClientRunning: Bool {
+  var isSwitchRunning: Bool {
     process?.isRunning == true
   }
 
   var logURL: URL {
-    OKProxySettings.logURL
+    OKRunLocalSwitchSettings.logURL
   }
 
   var canConfigure: Bool {
@@ -55,14 +55,14 @@ final class OKProxyClientStore: ObservableObject {
       return
     }
 
-    startClient()
+    startSwitch()
   }
 
   func refreshNodeStatus() {
     nodeStatus = Self.detectNodeStatus()
   }
 
-  func updateSettings(_ newSettings: OKProxySettings) {
+  func updateSettings(_ newSettings: OKRunLocalSwitchSettings) {
     settings = newSettings
     persistSettings()
   }
@@ -75,31 +75,31 @@ final class OKProxyClientStore: ObservableObject {
       guard nodeStatus.isUsable else {
         isEnabled = false
         defaults.set(false, forKey: Self.enabledKey)
-        status = .failed(OKProxyCommandError.missingNode.localizedDescription)
+        status = .failed(OKRunLocalSwitchCommandError.missingNode.localizedDescription)
         return
       }
 
       guard isInstalled else {
         isEnabled = false
         defaults.set(false, forKey: Self.enabledKey)
-        status = .failed("Download and set up OKProxy first.")
+        status = .failed("Download and set up OKRun Local Switch first.")
         return
       }
 
       guard settings.hasRequiredRuntimeFields else {
         isEnabled = false
         defaults.set(false, forKey: Self.enabledKey)
-        status = .failed(OKProxyCommandError.missingRequiredSettings(settings.missingRequiredFieldNames).localizedDescription)
+        status = .failed(OKRunLocalSwitchCommandError.missingRequiredSettings(settings.missingRequiredFieldNames).localizedDescription)
         return
       }
 
       defaults.set(true, forKey: Self.enabledKey)
       isEnabled = true
-      startClient()
+      startSwitch()
     } else {
       defaults.set(false, forKey: Self.enabledKey)
       isEnabled = false
-      stopClient()
+      stopSwitch()
     }
   }
 
@@ -119,8 +119,8 @@ final class OKProxyClientStore: ObservableObject {
     let action = forceUpdate ? "update" : "install"
     let title = forceUpdate ? "Updating Node.js" : "Installing Node.js"
 
-    if isClientRunning {
-      appendOperationOutput("[OKProxy] Stop the client before Node.js \(action).\n")
+    if isSwitchRunning {
+      appendOperationOutput("[OKRun Local Switch] Stop the switch before Node.js \(action).\n")
       return
     }
 
@@ -130,7 +130,7 @@ final class OKProxyClientStore: ObservableObject {
 
     Task { @MainActor in
       do {
-        let result = try await OKProxyCommandRunner.installNodeJS(forceUpdate: forceUpdate) { [weak self] text in
+        let result = try await OKRunLocalSwitchCommandRunner.installNodeJS(forceUpdate: forceUpdate) { [weak self] text in
           Task { @MainActor in
             self?.appendOperationOutput(text)
           }
@@ -138,7 +138,7 @@ final class OKProxyClientStore: ObservableObject {
 
         isBusy = false
         refreshNodeStatus()
-        appendOperationOutput("[OKProxy] Node.js \(action) finished with exit code \(result.exitCode).\n")
+        appendOperationOutput("[OKRun Local Switch] Node.js \(action) finished with exit code \(result.exitCode).\n")
 
         if result.exitCode == 0, nodeStatus.isUsable {
           status = isEnabled ? .stopped : .disabled
@@ -149,7 +149,7 @@ final class OKProxyClientStore: ObservableObject {
         isBusy = false
         refreshNodeStatus()
         status = .failed(error.localizedDescription)
-        appendOperationOutput("[OKProxy] Node.js \(action) failed: \(error.localizedDescription)\n")
+        appendOperationOutput("[OKRun Local Switch] Node.js \(action) failed: \(error.localizedDescription)\n")
       }
     }
   }
@@ -159,25 +159,25 @@ final class OKProxyClientStore: ObservableObject {
       return
     }
 
-    if isClientRunning {
-      appendOperationOutput("[OKProxy] Stop the client before setup.\n")
+    if isSwitchRunning {
+      appendOperationOutput("[OKRun Local Switch] Stop the switch before setup.\n")
       return
     }
 
     refreshNodeStatus()
     guard nodeStatus.isUsable else {
-      status = .failed(OKProxyCommandError.missingNode.localizedDescription)
-      appendOperationOutput("[OKProxy] \(OKProxyCommandError.missingNode.localizedDescription)\n")
+      status = .failed(OKRunLocalSwitchCommandError.missingNode.localizedDescription)
+      appendOperationOutput("[OKRun Local Switch] \(OKRunLocalSwitchCommandError.missingNode.localizedDescription)\n")
       return
     }
 
     isBusy = true
-    status = .busy("Setting up OKProxy")
-    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] Setting up OKProxy...\n"
+    status = .busy("Setting up OKRun Local Switch")
+    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] Setting up OKRun Local Switch...\n"
 
     Task { @MainActor in
       do {
-        let result = try await OKProxyCommandRunner.downloadAndSetup { [weak self] text in
+        let result = try await OKRunLocalSwitchCommandRunner.downloadAndSetup { [weak self] text in
           Task { @MainActor in
             self?.appendOperationOutput(text)
           }
@@ -185,12 +185,12 @@ final class OKProxyClientStore: ObservableObject {
 
         isBusy = false
         refreshInstallationStatus()
-        appendOperationOutput("[OKProxy] Setup finished with exit code \(result.exitCode).\n")
+        appendOperationOutput("[OKRun Local Switch] Setup finished with exit code \(result.exitCode).\n")
 
         if result.exitCode == 0 {
           status = isEnabled ? .stopped : .disabled
           if isEnabled, settings.hasRequiredRuntimeFields {
-            startClient()
+            startSwitch()
           }
         } else {
           status = .failed("Setup exited with code \(result.exitCode).")
@@ -199,35 +199,35 @@ final class OKProxyClientStore: ObservableObject {
         isBusy = false
         refreshInstallationStatus()
         status = .failed(error.localizedDescription)
-        appendOperationOutput("[OKProxy] Setup failed: \(error.localizedDescription)\n")
+        appendOperationOutput("[OKRun Local Switch] Setup failed: \(error.localizedDescription)\n")
       }
     }
   }
 
-  func updateOKProxy() {
+  func updateOKRunSwitch() {
     guard !isBusy else {
       return
     }
 
-    if isClientRunning {
-      appendOperationOutput("[OKProxy] Stop the client before updating.\n")
+    if isSwitchRunning {
+      appendOperationOutput("[OKRun Local Switch] Stop the switch before updating.\n")
       return
     }
 
     refreshNodeStatus()
     guard nodeStatus.isUsable else {
-      status = .failed(OKProxyCommandError.missingNode.localizedDescription)
-      appendOperationOutput("[OKProxy] \(OKProxyCommandError.missingNode.localizedDescription)\n")
+      status = .failed(OKRunLocalSwitchCommandError.missingNode.localizedDescription)
+      appendOperationOutput("[OKRun Local Switch] \(OKRunLocalSwitchCommandError.missingNode.localizedDescription)\n")
       return
     }
 
     isBusy = true
-    status = .busy("Updating OKProxy")
-    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] Updating OKProxy...\n"
+    status = .busy("Updating OKRun Local Switch")
+    lastOperationOutput = "[\(Self.timestampFormatter.string(from: Date()))] Updating OKRun Local Switch...\n"
 
     Task { @MainActor in
       do {
-        let result = try await OKProxyCommandRunner.update { [weak self] text in
+        let result = try await OKRunLocalSwitchCommandRunner.update { [weak self] text in
           Task { @MainActor in
             self?.appendOperationOutput(text)
           }
@@ -235,12 +235,12 @@ final class OKProxyClientStore: ObservableObject {
 
         isBusy = false
         refreshInstallationStatus()
-        appendOperationOutput("[OKProxy] Update finished with exit code \(result.exitCode).\n")
+        appendOperationOutput("[OKRun Local Switch] Update finished with exit code \(result.exitCode).\n")
 
         if result.exitCode == 0 {
           status = isEnabled ? .stopped : .disabled
           if isEnabled, settings.hasRequiredRuntimeFields {
-            startClient()
+            startSwitch()
           }
         } else {
           status = .failed("Update exited with code \(result.exitCode).")
@@ -249,12 +249,12 @@ final class OKProxyClientStore: ObservableObject {
         isBusy = false
         refreshInstallationStatus()
         status = .failed(error.localizedDescription)
-        appendOperationOutput("[OKProxy] Update failed: \(error.localizedDescription)\n")
+        appendOperationOutput("[OKRun Local Switch] Update failed: \(error.localizedDescription)\n")
       }
     }
   }
 
-  func startClient() {
+  func startSwitch() {
     guard !isBusy else {
       return
     }
@@ -268,64 +268,52 @@ final class OKProxyClientStore: ObservableObject {
     refreshInstallationStatus()
 
     guard nodeStatus.isUsable else {
-      status = .failed(OKProxyCommandError.missingNode.localizedDescription)
+      status = .failed(OKRunLocalSwitchCommandError.missingNode.localizedDescription)
       return
     }
 
     guard isInstalled else {
-      status = .failed("OKProxy is not installed at \(OKProxySettings.installURL.path).")
+      status = .failed("OKRun Local Switch is not installed at \(OKRunLocalSwitchSettings.installURL.path).")
       return
     }
 
     guard settings.hasRequiredRuntimeFields else {
-      status = .failed(OKProxyCommandError.missingRequiredSettings(settings.missingRequiredFieldNames).localizedDescription)
+      status = .failed(OKRunLocalSwitchCommandError.missingRequiredSettings(settings.missingRequiredFieldNames).localizedDescription)
       return
     }
 
-    let clientCertPath = Self.expandedPath(settings.trimmedClientCertPath)
-    let clientKeyPath = Self.expandedPath(settings.trimmedClientKeyPath)
-    let caCertPath = Self.expandedPath(settings.trimmedCACertPath)
-
-    for path in [clientCertPath, clientKeyPath, caCertPath] where !FileManager.default.fileExists(atPath: path) {
-      status = .failed(OKProxyCommandError.missingFile(path).localizedDescription)
+    let entryURL = OKRunLocalSwitchSettings.webSwitchURL.appendingPathComponent("src/index.js", isDirectory: false)
+    guard FileManager.default.fileExists(atPath: entryURL.path) else {
+      status = .failed(OKRunLocalSwitchCommandError.missingEntrypoint(entryURL.path).localizedDescription)
       return
     }
 
-    let clientURL = OKProxySettings.installURL.appendingPathComponent("apps/client/index.js", isDirectory: false)
-    guard FileManager.default.fileExists(atPath: clientURL.path) else {
-      status = .failed("OKProxy client entrypoint was not found at \(clientURL.path).")
-      return
-    }
+    let nodePath = nodeStatus.path ?? OKRunLocalSwitchSettings.localNodeURL.path
+    Self.stopManagedSwitchProcesses(timeout: 0.5)
 
-    let nodePath = nodeStatus.path ?? OKProxySettings.localNodeURL.path
-    Self.stopManagedClientProcesses(timeout: 0.5)
-
-    let clientArguments = [
-      clientURL.path,
-      "--multipath",
-      "--server",
-      settings.trimmedServerHost,
-      "--target",
-      settings.trimmedTargetHost,
-      "--cert",
-      clientCertPath,
-      "--key",
-      clientKeyPath,
-      "--ca",
-      caCertPath
+    let switchArguments = [
+      entryURL.path,
+      "--host",
+      settings.trimmedHost,
+      "--tls-enabled",
+      "false",
+      "--local-port",
+      settings.trimmedPort,
+      "--status-port",
+      settings.trimmedStatusPort
     ]
-    let command = ([nodePath] + clientArguments)
+    let command = ([nodePath] + switchArguments)
       .map(OKProxyCommandRunner.shellQuote)
       .joined(separator: " ")
 
-    appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] Starting OKProxy: \(command)\n")
+    appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] Starting OKRun Local Switch: \(command)\n")
     stopWasRequested = false
     status = .starting
 
-    let clientProcess = Process()
-    clientProcess.executableURL = URL(fileURLWithPath: nodePath)
-    clientProcess.arguments = clientArguments
-    clientProcess.currentDirectoryURL = OKProxySettings.installURL.appendingPathComponent("apps/client", isDirectory: true)
+    let switchProcess = Process()
+    switchProcess.executableURL = URL(fileURLWithPath: nodePath)
+    switchProcess.arguments = switchArguments
+    switchProcess.currentDirectoryURL = OKRunLocalSwitchSettings.webSwitchURL
 
     var environment = ProcessInfo.processInfo.environment
     let localBinPath = FileManager.default.homeDirectoryForCurrentUser
@@ -333,12 +321,15 @@ final class OKProxyClientStore: ObservableObject {
       .path
     environment["PATH"] = "\(localBinPath):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     environment["NODE_ENV"] = "production"
-    environment["MULTIPATH_ENABLED"] = "true"
-    clientProcess.environment = environment
+    environment["OKRUN_SWITCH_TLS_ENABLED"] = "false"
+    environment["OKRUN_SWITCH_HOST"] = settings.trimmedHost
+    environment["OKRUN_SWITCH_LOCAL_PORT"] = settings.trimmedPort
+    environment["OKRUN_SWITCH_STATUS_PORT"] = settings.trimmedStatusPort
+    switchProcess.environment = environment
 
     let pipe = Pipe()
-    clientProcess.standardOutput = pipe
-    clientProcess.standardError = pipe
+    switchProcess.standardOutput = pipe
+    switchProcess.standardError = pipe
 
     pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
       let data = handle.availableData
@@ -352,7 +343,7 @@ final class OKProxyClientStore: ObservableObject {
       }
     }
 
-    clientProcess.terminationHandler = { [weak self] process in
+    switchProcess.terminationHandler = { [weak self] process in
       pipe.fileHandleForReading.readabilityHandler = nil
       let remainingData = pipe.fileHandleForReading.readDataToEndOfFile()
       let remainingText = String(decoding: remainingData, as: UTF8.self)
@@ -361,28 +352,28 @@ final class OKProxyClientStore: ObservableObject {
         if !remainingText.isEmpty {
           self?.appendToLog(remainingText)
         }
-        self?.handleClientTermination(process.terminationStatus)
+        self?.handleSwitchTermination(process.terminationStatus)
       }
     }
 
     do {
-      try clientProcess.run()
-      process = clientProcess
+      try switchProcess.run()
+      process = switchProcess
       status = .running
     } catch {
       pipe.fileHandleForReading.readabilityHandler = nil
       status = .failed(error.localizedDescription)
-      appendToLog("[\(Self.timestampFormatter.string(from: Date()))] Failed to start OKProxy: \(error.localizedDescription)\n")
+      appendToLog("[\(Self.timestampFormatter.string(from: Date()))] Failed to start OKRun Local Switch: \(error.localizedDescription)\n")
     }
   }
 
-  func stopClient() {
+  func stopSwitch() {
     status = .stopping
     stopWasRequested = true
     appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] Stop requested\n")
 
     guard let process, process.isRunning else {
-      Self.stopManagedClientProcesses(timeout: 0.5)
+      Self.stopManagedSwitchProcesses(timeout: 0.5)
       self.process = nil
       status = isEnabled ? .stopped : .disabled
       refreshLogs()
@@ -398,11 +389,11 @@ final class OKProxyClientStore: ObservableObject {
     stopWasRequested = true
 
     if let process, process.isRunning {
-      appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] App quitting; stopping OKProxy\n")
+      appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] App quitting; stopping OKRun Local Switch\n")
       ManagedProcessCleanup.terminate(process)
     }
 
-    Self.stopManagedClientProcesses(timeout: 0.5)
+    Self.stopManagedSwitchProcesses(timeout: 0.5)
     process = nil
   }
 
@@ -411,12 +402,12 @@ final class OKProxyClientStore: ObservableObject {
   }
 
   func openInstallDirectory() {
-    if FileManager.default.fileExists(atPath: OKProxySettings.installURL.path) {
-      NSWorkspace.shared.open(OKProxySettings.installURL)
+    if FileManager.default.fileExists(atPath: OKRunLocalSwitchSettings.installURL.path) {
+      NSWorkspace.shared.open(OKRunLocalSwitchSettings.installURL)
       return
     }
 
-    let parentURL = OKProxySettings.installURL.deletingLastPathComponent()
+    let parentURL = OKRunLocalSwitchSettings.installURL.deletingLastPathComponent()
     try? FileManager.default.createDirectory(at: parentURL, withIntermediateDirectories: true)
     NSWorkspace.shared.open(parentURL)
   }
@@ -428,18 +419,18 @@ final class OKProxyClientStore: ObservableObject {
   }
 
   func refreshInstallationStatus() {
-    isInstalled = Self.installationExists(at: OKProxySettings.installURL)
+    isInstalled = Self.installationExists(at: OKRunLocalSwitchSettings.installURL)
   }
 
-  private func handleClientTermination(_ exitCode: Int32) {
-    appendToLog("[\(Self.timestampFormatter.string(from: Date()))] OKProxy exited with code \(exitCode)\n")
+  private func handleSwitchTermination(_ exitCode: Int32) {
+    appendToLog("[\(Self.timestampFormatter.string(from: Date()))] OKRun Local Switch exited with code \(exitCode)\n")
     let wasStopRequested = stopWasRequested
     stopWasRequested = false
     process = nil
     refreshLogs()
 
     if isEnabled {
-      status = (wasStopRequested || exitCode == 0) ? .stopped : .failed("OKProxy exited with code \(exitCode).")
+      status = (wasStopRequested || exitCode == 0) ? .stopped : .failed("OKRun Local Switch exited with code \(exitCode).")
     } else {
       status = .disabled
     }
@@ -496,10 +487,10 @@ final class OKProxyClientStore: ObservableObject {
     logRefreshTimer = timer
   }
 
-  private static func loadSettings(defaults: UserDefaults) -> OKProxySettings {
+  private static func loadSettings(defaults: UserDefaults) -> OKRunLocalSwitchSettings {
     guard
       let data = defaults.data(forKey: settingsKey),
-      let settings = try? JSONDecoder().decode(OKProxySettings.self, from: data)
+      let settings = try? JSONDecoder().decode(OKRunLocalSwitchSettings.self, from: data)
     else {
       return .defaults
     }
@@ -509,19 +500,19 @@ final class OKProxyClientStore: ObservableObject {
 
   private static func installationExists(at url: URL) -> Bool {
     let gitURL = url.appendingPathComponent(".git", isDirectory: true)
-    let clientURL = url.appendingPathComponent("apps/client/index.js", isDirectory: false)
+    let entryURL = url.appendingPathComponent("web-switch/src/index.js", isDirectory: false)
     return FileManager.default.fileExists(atPath: gitURL.path)
-      && FileManager.default.fileExists(atPath: clientURL.path)
+      && FileManager.default.fileExists(atPath: entryURL.path)
   }
 
-  private static func stopManagedClientProcesses(timeout: TimeInterval = 1) {
-    let clientPath = OKProxySettings.installURL
-      .appendingPathComponent("apps/client/index.js", isDirectory: false)
+  private static func stopManagedSwitchProcesses(timeout: TimeInterval = 1) {
+    let entryPath = OKRunLocalSwitchSettings.webSwitchURL
+      .appendingPathComponent("src/index.js", isDirectory: false)
       .path
-    ManagedProcessCleanup.terminateProcesses(matching: clientPath, timeout: timeout)
+    ManagedProcessCleanup.terminateProcesses(matching: entryPath, timeout: timeout)
   }
 
-  private static func detectNodeStatus() -> OKProxyNodeStatus {
+  private static func detectNodeStatus() -> OKRunLocalSwitchNodeStatus {
     let command = #"""
 LOCAL_NODE="$HOME/.local/bin/node"
 if [ -x "$LOCAL_NODE" ]; then
@@ -597,10 +588,6 @@ exit 1
     return (process.terminationStatus, String(decoding: data, as: UTF8.self))
   }
 
-  private static func expandedPath(_ path: String) -> String {
-    (path as NSString).expandingTildeInPath
-  }
-
   private static func tailLines(of url: URL, limit: Int) -> String {
     guard FileManager.default.fileExists(atPath: url.path) else {
       return ""
@@ -630,8 +617,8 @@ exit 1
     }
   }
 
-  private static let settingsKey = "okproxy.client.settings.v2"
-  private static let enabledKey = "okproxy.client.enabled"
+  private static let settingsKey = "okrun.localSwitch.settings.v1"
+  private static let enabledKey = "okrun.localSwitch.enabled"
 
   private static let timestampFormatter: DateFormatter = {
     let formatter = DateFormatter()

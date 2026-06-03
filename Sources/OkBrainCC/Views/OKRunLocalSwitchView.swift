@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-struct OKProxyClientView: View {
-  @ObservedObject private var store = OKProxyClientStore.shared
-  @State private var draft = OKProxySettings.defaults
+struct OKRunLocalSwitchView: View {
+  @ObservedObject private var store = OKRunLocalSwitchStore.shared
+  @State private var draft = OKRunLocalSwitchSettings.defaults
   @State private var isSetupExpanded = false
   @State private var isConfigurationExpanded = false
 
@@ -35,19 +35,19 @@ struct OKProxyClientView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("OKProxy Client")
+      Text("OKRun Local Switch")
         .font(.title2.weight(.semibold))
 
-      Text("Run the OKProxy client from a cloned local checkout.")
+      Text("Run OkRun's web-switch locally as a plain TCP Local Switch. No PEM files required.")
         .foregroundStyle(.secondary)
     }
   }
 
   private var controlsSection: some View {
-    sectionCard(title: "Client Controls", systemImage: "switch.2") {
+    sectionCard(title: "Switch Controls", systemImage: "switch.2") {
       HStack(alignment: .center, spacing: 16) {
         VStack(alignment: .leading, spacing: 8) {
-          Toggle("Auto Start OKProxy Client", isOn: Binding {
+          Toggle("Auto Start OKRun Local Switch", isOn: Binding {
             store.isEnabled
           } set: { isEnabled in
             if isEnabled {
@@ -58,7 +58,7 @@ struct OKProxyClientView: View {
           .toggleStyle(.switch)
           .disabled(toggleDisabled)
 
-          Text("Starts automatically when OkBrainCC opens. Turning it off stops the current client.")
+          Text("Starts automatically when OkBrainCC opens. Turning it off stops the current switch.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -68,9 +68,9 @@ struct OKProxyClientView: View {
         VStack(alignment: .trailing, spacing: 10) {
           statusBadges
 
-          if store.isClientRunning {
+          if store.isSwitchRunning {
             Button(role: .destructive) {
-              store.stopClient()
+              store.stopSwitch()
             } label: {
               Label("Stop", systemImage: "stop.fill")
             }
@@ -79,7 +79,7 @@ struct OKProxyClientView: View {
           } else {
             Button {
               store.updateSettings(draft)
-              store.startClient()
+              store.startSwitch()
             } label: {
               Label("Start Now", systemImage: "play.fill")
             }
@@ -104,7 +104,7 @@ struct OKProxyClientView: View {
             .font(.headline)
           Text(store.nodeStatus.message)
             .foregroundStyle(.secondary)
-          Text("Download and install Node.js first. OKProxy setup, host fields, certificate paths, and start controls stay disabled until Node.js is ready.")
+          Text("Download and install Node.js first. Setup, switch fields, and start controls stay disabled until Node.js is ready.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }
@@ -117,7 +117,7 @@ struct OKProxyClientView: View {
           Label("Download & Install Node.js", systemImage: "arrow.down.circle.fill")
         }
         .buttonStyle(.borderedProminent)
-        .disabled(store.isBusy || store.isClientRunning)
+        .disabled(store.isBusy || store.isSwitchRunning)
       }
       .padding(14)
       .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
@@ -181,7 +181,7 @@ struct OKProxyClientView: View {
   }
 
   private var installationBadge: some View {
-    Text(store.isInstalled ? "OKProxy installed" : "OKProxy not installed")
+    Text(store.isInstalled ? "Switch installed" : "Switch not installed")
       .font(.caption.weight(.semibold))
       .padding(.horizontal, 8)
       .padding(.vertical, 3)
@@ -211,8 +211,9 @@ struct OKProxyClientView: View {
       isExpanded: $isSetupExpanded
     ) {
       VStack(alignment: .leading, spacing: 8) {
-        labeledValue("Repository", value: OKProxySettings.repoURL)
-        labeledValue("Cloned location", value: OKProxySettings.installURL.path)
+        labeledValue("Repository", value: OKRunLocalSwitchSettings.repoURL)
+        labeledValue("Component", value: OKRunLocalSwitchSettings.sourceURL)
+        labeledValue("Cloned location", value: OKRunLocalSwitchSettings.installURL.path)
         labeledValue("Node.js", value: store.nodeStatus.message)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -220,9 +221,9 @@ struct OKProxyClientView: View {
       HStack(spacing: 10) {
         if store.isInstalled {
           Button {
-            store.updateOKProxy()
+            store.updateOKRunSwitch()
           } label: {
-            Label("Update OKProxy", systemImage: "arrow.triangle.2.circlepath")
+            Label("Update OKRun Switch", systemImage: "arrow.triangle.2.circlepath")
           }
           .buttonStyle(.borderedProminent)
           .disabled(setupDisabled)
@@ -263,8 +264,8 @@ struct OKProxyClientView: View {
 
   private var configurationSection: some View {
     collapsibleSectionCard(
-      title: "Client Configuration",
-      systemImage: "key.horizontal",
+      title: "Switch Configuration",
+      systemImage: "slider.horizontal.3",
       isCollapsible: configurationCanCollapse,
       isExpanded: $isConfigurationExpanded
     ) {
@@ -276,28 +277,22 @@ struct OKProxyClientView: View {
 
       VStack(alignment: .leading, spacing: 12) {
         labeledField(
-          "Server host",
-          text: $draft.serverHost,
-          prompt: "example.com:9443"
+          "Host",
+          text: $draft.host,
+          prompt: "127.0.0.1"
         )
 
         labeledField(
-          "Target host",
-          text: $draft.targetHost,
-          prompt: "localhost:3000"
+          "Port",
+          text: $draft.port,
+          prompt: "9444"
         )
 
-        pathField("Client certificate", text: $draft.clientCertPath, prompt: "/path/to/client-cert.pem") {
-          chooseFile(\.clientCertPath)
-        }
-
-        pathField("Client private key", text: $draft.clientKeyPath, prompt: "/path/to/client-key.pem") {
-          chooseFile(\.clientKeyPath)
-        }
-
-        pathField("CA certificate", text: $draft.caCertPath, prompt: "/path/to/ca-cert.pem") {
-          chooseFile(\.caCertPath)
-        }
+        labeledField(
+          "Status port",
+          text: $draft.statusPort,
+          prompt: "8080"
+        )
       }
       .disabled(configurationDisabled)
 
@@ -310,7 +305,7 @@ struct OKProxyClientView: View {
         }
         .disabled(configurationDisabled)
 
-        Text("Only these three certificate/key paths are required by the OKProxy client setup: client-cert.pem, client-key.pem, and ca-cert.pem.")
+        Text("Local Switch disables TLS and only needs host, port, and status port.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -347,7 +342,7 @@ struct OKProxyClientView: View {
 
       TailTextScrollView(
         text: store.latestLogLines,
-        emptyText: "No OKProxy logs yet."
+        emptyText: "No OKRun Local Switch logs yet."
       )
       .frame(minHeight: 220, idealHeight: 300, maxHeight: 420)
       .background(.background, in: RoundedRectangle(cornerRadius: 8))
@@ -377,15 +372,15 @@ struct OKProxyClientView: View {
   }
 
   private var setupDisabled: Bool {
-    store.isBusy || store.isClientRunning || !store.nodeStatus.isUsable
+    store.isBusy || store.isSwitchRunning || !store.nodeStatus.isUsable
   }
 
   private var nodeUpdateDisabled: Bool {
-    store.isBusy || store.isClientRunning
+    store.isBusy || store.isSwitchRunning
   }
 
   private var configurationDisabled: Bool {
-    store.isBusy || store.isClientRunning || !store.canConfigure
+    store.isBusy || store.isSwitchRunning || !store.canConfigure
   }
 
   private var startDisabled: Bool {
@@ -402,11 +397,11 @@ struct OKProxyClientView: View {
 
   private var configurationDisabledMessage: String {
     if !store.nodeStatus.isUsable {
-      return "Install Node.js first to enable OKProxy configuration."
+      return "Install Node.js first to enable OKRun Local Switch configuration."
     }
 
     if !store.isInstalled {
-      return "Download and set up OKProxy first to enable configuration."
+      return "Download and set up OKRun Local Switch first to enable configuration."
     }
 
     return "Configuration is temporarily disabled."
@@ -521,181 +516,6 @@ struct OKProxyClientView: View {
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
-    }
-  }
-
-  private func pathField(
-    _ title: String,
-    text: Binding<String>,
-    prompt: String,
-    choose: @escaping () -> Void
-  ) -> some View {
-    VStack(alignment: .leading, spacing: 5) {
-      Text(title)
-        .font(.caption.weight(.semibold))
-
-      HStack(spacing: 8) {
-        TextField(prompt, text: text)
-          .textFieldStyle(.roundedBorder)
-
-        Button {
-          choose()
-        } label: {
-          Label("Choose", systemImage: "folder")
-        }
-      }
-    }
-  }
-
-  private func chooseFile(_ keyPath: WritableKeyPath<OKProxySettings, String>) {
-    let panel = NSOpenPanel()
-    panel.canChooseFiles = true
-    panel.canChooseDirectories = false
-    panel.allowsMultipleSelection = false
-
-    if panel.runModal() == .OK, let url = panel.url {
-      draft[keyPath: keyPath] = url.path
-    }
-  }
-}
-
-struct TailTextScrollView: NSViewRepresentable {
-  let text: String
-  let emptyText: String
-
-  func makeCoordinator() -> Coordinator {
-    Coordinator()
-  }
-
-  func makeNSView(context: Context) -> NSScrollView {
-    let scrollView = NSScrollView()
-    scrollView.borderType = .noBorder
-    scrollView.drawsBackground = false
-    scrollView.hasVerticalScroller = true
-    scrollView.hasHorizontalScroller = false
-    scrollView.autohidesScrollers = true
-
-    let textView = NSTextView()
-    textView.drawsBackground = false
-    textView.isEditable = false
-    textView.isSelectable = true
-    textView.isRichText = false
-    textView.importsGraphics = false
-    textView.font = Self.font
-    textView.textColor = .labelColor
-    textView.textContainerInset = NSSize(width: 12, height: 12)
-    textView.textContainer?.lineFragmentPadding = 0
-    textView.textContainer?.widthTracksTextView = true
-    textView.textContainer?.containerSize = NSSize(
-      width: scrollView.contentSize.width,
-      height: CGFloat.greatestFiniteMagnitude
-    )
-    textView.minSize = NSSize(width: 0, height: 0)
-    textView.maxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude,
-      height: CGFloat.greatestFiniteMagnitude
-    )
-    textView.isHorizontallyResizable = false
-    textView.isVerticallyResizable = true
-    textView.autoresizingMask = [.width]
-
-    scrollView.documentView = textView
-    scrollView.contentView.postsBoundsChangedNotifications = true
-    NotificationCenter.default.addObserver(
-      context.coordinator,
-      selector: #selector(Coordinator.scrollBoundsDidChange(_:)),
-      name: NSView.boundsDidChangeNotification,
-      object: scrollView.contentView
-    )
-
-    return scrollView
-  }
-
-  func updateNSView(_ scrollView: NSScrollView, context: Context) {
-    guard let textView = scrollView.documentView as? NSTextView else { return }
-
-    let displayText = text.isEmpty ? emptyText : text
-    let shouldScrollToBottom = context.coordinator.lastRenderedText.isEmpty || context.coordinator.isFollowingTail
-
-    textView.font = Self.font
-    textView.textColor = .labelColor
-    textView.textContainer?.containerSize = NSSize(
-      width: scrollView.contentSize.width,
-      height: CGFloat.greatestFiniteMagnitude
-    )
-
-    guard context.coordinator.lastRenderedText != displayText else {
-      if shouldScrollToBottom {
-        DispatchQueue.main.async {
-          context.coordinator.scrollToBottom(scrollView)
-        }
-      }
-      return
-    }
-
-    textView.textStorage?.setAttributedString(
-      NSAttributedString(
-        string: displayText,
-        attributes: [
-          .font: Self.font,
-          .foregroundColor: NSColor.labelColor
-        ]
-      )
-    )
-    context.coordinator.lastRenderedText = displayText
-
-    if shouldScrollToBottom {
-      DispatchQueue.main.async {
-        context.coordinator.scrollToBottom(scrollView)
-      }
-    }
-  }
-
-  static func dismantleNSView(_ nsView: NSScrollView, coordinator: Coordinator) {
-    NotificationCenter.default.removeObserver(
-      coordinator,
-      name: NSView.boundsDidChangeNotification,
-      object: nsView.contentView
-    )
-  }
-
-  private static let font = NSFont.monospacedSystemFont(
-    ofSize: NSFont.smallSystemFontSize,
-    weight: .regular
-  )
-
-  final class Coordinator: NSObject {
-    var isFollowingTail = true
-    var isProgrammaticScroll = false
-    var lastRenderedText = ""
-
-    @objc func scrollBoundsDidChange(_ notification: Notification) {
-      guard !isProgrammaticScroll,
-            let clipView = notification.object as? NSClipView,
-            let textView = clipView.documentView as? NSTextView else {
-        return
-      }
-
-      updateFollowingTailState(from: textView)
-    }
-
-    func scrollToBottom(_ scrollView: NSScrollView) {
-      guard let textView = scrollView.documentView as? NSTextView else { return }
-
-      isProgrammaticScroll = true
-      textView.layoutSubtreeIfNeeded()
-      textView.scrollToEndOfDocument(nil)
-      scrollView.reflectScrolledClipView(scrollView.contentView)
-      isFollowingTail = true
-
-      DispatchQueue.main.async { [weak self] in
-        self?.isProgrammaticScroll = false
-      }
-    }
-
-    private func updateFollowingTailState(from textView: NSTextView) {
-      let distanceFromBottom = textView.bounds.maxY - textView.visibleRect.maxY
-      isFollowingTail = distanceFromBottom <= 24
     }
   }
 }
