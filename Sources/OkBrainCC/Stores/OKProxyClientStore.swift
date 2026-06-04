@@ -335,7 +335,6 @@ final class OKProxyClientStore: ObservableObject {
       .path
     environment["PATH"] = "\(localBinPath):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     environment["NODE_ENV"] = "production"
-    environment["MULTIPATH_ENABLED"] = "true"
     clientProcess.environment = environment
 
     let pipe = Pipe()
