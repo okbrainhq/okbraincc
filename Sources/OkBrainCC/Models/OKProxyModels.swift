@@ -3,9 +3,26 @@ import Foundation
 struct OKProxySettings: Codable, Hashable {
   var serverHost: String
   var targetHost: String
+  var multipathEnabled: Bool
   var clientCertPath: String
   var clientKeyPath: String
   var caCertPath: String
+
+  init(
+    serverHost: String,
+    targetHost: String,
+    multipathEnabled: Bool = true,
+    clientCertPath: String,
+    clientKeyPath: String,
+    caCertPath: String
+  ) {
+    self.serverHost = serverHost
+    self.targetHost = targetHost
+    self.multipathEnabled = multipathEnabled
+    self.clientCertPath = clientCertPath
+    self.clientKeyPath = clientKeyPath
+    self.caCertPath = caCertPath
+  }
 
   static let repoURL = "https://github.com/okbrainhq/okproxy"
 
@@ -21,6 +38,7 @@ struct OKProxySettings: Codable, Hashable {
   static let defaults = OKProxySettings(
     serverHost: "",
     targetHost: "localhost:3000",
+    multipathEnabled: true,
     clientCertPath: "",
     clientKeyPath: "",
     caCertPath: ""
@@ -68,6 +86,36 @@ struct OKProxySettings: Codable, Hashable {
       names.append("CA certificate")
     }
     return names
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case serverHost
+    case targetHost
+    case multipathEnabled
+    case clientCertPath
+    case clientKeyPath
+    case caCertPath
+  }
+
+  init(from decoder: Decoder) throws {
+    let defaults = Self.defaults
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    serverHost = try container.decodeIfPresent(String.self, forKey: .serverHost) ?? defaults.serverHost
+    targetHost = try container.decodeIfPresent(String.self, forKey: .targetHost) ?? defaults.targetHost
+    multipathEnabled = try container.decodeIfPresent(Bool.self, forKey: .multipathEnabled) ?? defaults.multipathEnabled
+    clientCertPath = try container.decodeIfPresent(String.self, forKey: .clientCertPath) ?? defaults.clientCertPath
+    clientKeyPath = try container.decodeIfPresent(String.self, forKey: .clientKeyPath) ?? defaults.clientKeyPath
+    caCertPath = try container.decodeIfPresent(String.self, forKey: .caCertPath) ?? defaults.caCertPath
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(serverHost, forKey: .serverHost)
+    try container.encode(targetHost, forKey: .targetHost)
+    try container.encode(multipathEnabled, forKey: .multipathEnabled)
+    try container.encode(clientCertPath, forKey: .clientCertPath)
+    try container.encode(clientKeyPath, forKey: .clientKeyPath)
+    try container.encode(caCertPath, forKey: .caCertPath)
   }
 }
 

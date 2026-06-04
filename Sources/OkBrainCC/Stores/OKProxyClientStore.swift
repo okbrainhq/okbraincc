@@ -300,9 +300,11 @@ final class OKProxyClientStore: ObservableObject {
     let nodePath = nodeStatus.path ?? OKProxySettings.localNodeURL.path
     Self.stopManagedClientProcesses(timeout: 0.5)
 
-    let clientArguments = [
-      clientURL.path,
-      "--multipath",
+    var clientArguments = [clientURL.path]
+    if settings.multipathEnabled {
+      clientArguments.append("--multipath")
+    }
+    clientArguments += [
       "--server",
       settings.trimmedServerHost,
       "--target",

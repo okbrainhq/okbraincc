@@ -287,6 +287,15 @@ struct OKProxyClientView: View {
           prompt: "localhost:3000"
         )
 
+        VStack(alignment: .leading, spacing: 5) {
+          Toggle("Enable multipath", isOn: $draft.multipathEnabled)
+            .toggleStyle(.switch)
+
+          Text("Turn this off to start the OKProxy client without the --multipath flag.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+
         pathField("Client certificate", text: $draft.clientCertPath, prompt: "/path/to/client-cert.pem") {
           chooseFile(\.clientCertPath)
         }
