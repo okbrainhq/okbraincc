@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     BackupAgentStore.shared.startScheduler()
     OKProxyClientStore.shared.startIfEnabled()
     OKRunLocalSwitchStore.shared.startIfEnabled()
+    LocalAIStore.shared.startIfEnabled()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -19,12 +20,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationWillTerminate(_ notification: Notification) {
     OKProxyClientStore.shared.stopForAppTermination()
     OKRunLocalSwitchStore.shared.stopForAppTermination()
+    LocalAIStore.shared.stopForAppTermination()
   }
 }
 
 @main
 struct OkBrainCCApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+  init() {
+    LocalAIHeadlessCLI.runAndExitIfRequested()
+  }
 
   var body: some Scene {
     Window("OkBrainCC", id: WindowID.main) {

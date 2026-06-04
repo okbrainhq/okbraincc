@@ -12,7 +12,10 @@ let package = Package(
   ],
   targets: [
     .executableTarget(
-      name: "OkBrainCC"
+      name: "OkBrainCC",
+      resources: [
+        .copy("Resources/local_ai_mlx_bridge.py")
+      ]
     )
   ]
 )

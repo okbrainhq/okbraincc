@@ -4,6 +4,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
   case startOKRun
   case okProxyClient
   case okRunLocalSwitch
+  case localAI
   case backupProdbox
   case backupSandbox
 
@@ -19,6 +20,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
       "OKProxy Client"
     case .okRunLocalSwitch:
       "OKRun Local Switch"
+    case .localAI:
+      "Local AI"
     case .backupProdbox:
       "Backup: Prodbox"
     case .backupSandbox:
@@ -34,6 +37,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
       "network"
     case .okRunLocalSwitch:
       "switch.2"
+    case .localAI:
+      "brain.head.profile"
     case .backupProdbox:
       "externaldrive"
     case .backupSandbox:

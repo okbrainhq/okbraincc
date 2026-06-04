@@ -1,21 +1,14 @@
 import SwiftUI
 
 struct ContentView: View {
-  @SceneStorage("selectedAppSection") private var selectedSectionID = AppSection.startOKRun.rawValue
-
-  private var selection: Binding<AppSection?> {
-    Binding {
-      AppSection(rawValue: selectedSectionID) ?? .startOKRun
-    } set: { newSelection in
-      selectedSectionID = (newSelection ?? .startOKRun).rawValue
-    }
-  }
+  @State private var selectedSection: AppSection? = .startOKRun
 
   var body: some View {
     NavigationSplitView {
-      SidebarView(selection: selection)
+      SidebarView(selection: $selectedSection)
     } detail: {
-      DetailView(section: selection.wrappedValue ?? .startOKRun)
+      DetailView(section: selectedSection ?? .startOKRun)
+        .id(selectedSection ?? .startOKRun)
     }
   }
 }
