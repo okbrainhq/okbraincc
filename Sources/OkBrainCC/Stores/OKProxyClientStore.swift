@@ -393,18 +393,24 @@ final class OKProxyClientStore: ObservableObject {
     process.terminate()
   }
 
-  func stopForAppTermination() {
+  func stopForAppTermination() async {
     logRefreshTimer?.invalidate()
     logRefreshTimer = nil
     stopWasRequested = true
 
-    if let process, process.isRunning {
+    let processToStop = process
+    process = nil
+
+    if let processToStop, processToStop.isRunning {
       appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] App quitting; stopping OKProxy\n")
-      ManagedProcessCleanup.terminate(process)
     }
 
-    Self.stopManagedClientProcesses(timeout: 0.5)
-    process = nil
+    await Task.detached(priority: .userInitiated) {
+      if let processToStop, processToStop.isRunning {
+        ManagedProcessCleanup.terminate(processToStop)
+      }
+      Self.stopManagedClientProcesses(timeout: 0.5)
+    }.value
   }
 
   func refreshLogs() {
@@ -515,7 +521,7 @@ final class OKProxyClientStore: ObservableObject {
       && FileManager.default.fileExists(atPath: clientURL.path)
   }
 
-  private static func stopManagedClientProcesses(timeout: TimeInterval = 1) {
+  private nonisolated static func stopManagedClientProcesses(timeout: TimeInterval = 1) {
     let clientPath = OKProxySettings.installURL
       .appendingPathComponent("apps/client/index.js", isDirectory: false)
       .path

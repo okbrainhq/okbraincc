@@ -383,18 +383,24 @@ final class OKRunLocalSwitchStore: ObservableObject {
     process.terminate()
   }
 
-  func stopForAppTermination() {
+  func stopForAppTermination() async {
     logRefreshTimer?.invalidate()
     logRefreshTimer = nil
     stopWasRequested = true
 
-    if let process, process.isRunning {
+    let processToStop = process
+    process = nil
+
+    if let processToStop, processToStop.isRunning {
       appendToLog("\n[\(Self.timestampFormatter.string(from: Date()))] App quitting; stopping OKRun Local Switch\n")
-      ManagedProcessCleanup.terminate(process)
     }
 
-    Self.stopManagedSwitchProcesses(timeout: 0.5)
-    process = nil
+    await Task.detached(priority: .userInitiated) {
+      if let processToStop, processToStop.isRunning {
+        ManagedProcessCleanup.terminate(processToStop)
+      }
+      Self.stopManagedSwitchProcesses(timeout: 0.5)
+    }.value
   }
 
   func refreshLogs() {
@@ -505,7 +511,7 @@ final class OKRunLocalSwitchStore: ObservableObject {
       && FileManager.default.fileExists(atPath: entryURL.path)
   }
 
-  private static func stopManagedSwitchProcesses(timeout: TimeInterval = 1) {
+  private nonisolated static func stopManagedSwitchProcesses(timeout: TimeInterval = 1) {
     let entryPath = OKRunLocalSwitchSettings.webSwitchURL
       .appendingPathComponent("src/index.js", isDirectory: false)
       .path
