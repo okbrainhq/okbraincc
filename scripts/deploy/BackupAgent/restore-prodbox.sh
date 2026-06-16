@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REMOTE_HOST="arunoda@prodbox.local"
-BACKUP_ROOT="$HOME/okbraincc-backups/prodbox"
+BACKUP_ROOT="${OKBRAINCC_BACKUP_ROOT:-$HOME/okbraincc-backups/prodbox}"
 RUNS_DIR="$BACKUP_ROOT/runs"
 REMOTE_DB="/var/www/brain/brain.db"
 REMOTE_DATA="/var/www/brain-data/"

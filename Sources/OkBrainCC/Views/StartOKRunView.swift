@@ -2,8 +2,8 @@ import Foundation
 import SwiftUI
 
 struct StartOKRunView: View {
-  @AppStorage(OKRunLauncher.appPathKey) private var appPath = OKRunLauncher.defaultAppURL.path
-  @AppStorage(OKRunLauncher.autorunEnabledKey) private var isAutorunEnabled = OKRunLauncher.defaultAutorunEnabled
+  @AppStorage(OKRunLauncher.appPathKey, store: AppEnvironment.userDefaults) private var appPath = OKRunLauncher.defaultAppURL.path
+  @AppStorage(OKRunLauncher.autorunEnabledKey, store: AppEnvironment.userDefaults) private var isAutorunEnabled = OKRunLauncher.defaultAutorunEnabled
 
   @State private var launchStatus: LaunchStatus = .idle
 
@@ -41,7 +41,7 @@ struct StartOKRunView: View {
           } label: {
             Image(systemName: "arrow.counterclockwise")
           }
-          .help("Reset to /Applications/OkrunVM.app")
+          .help("Reset to \(OKRunLauncher.defaultAppURL.path)")
         }
       }
 

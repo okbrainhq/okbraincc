@@ -102,3 +102,41 @@ Open **Local AI** in the sidebar to configure:
 - Validation/test actions, idle unload controls, and runtime logs
 
 After changing model rows, restart the local server so `/v1/models` and API clients see the updated catalog.
+
+## Development vs Production
+
+The app supports two isolated environments so local development never touches production state.
+
+| Mode | Command | Bundle | Bundle ID | State directories |
+|------|---------|--------|-----------|-------------------|
+| Dev (default) | `./scripts/build.sh` | `dist/OkBrainCC-Dev.app` | `com.okbraincc.app.dev` | `~/okproxy-dev` (install), `~/.okproxy-dev` (logs), `~/okrun-switch-dev` (install), `~/.okrun-switch-dev` (logs), `~/okbraincc-backups-dev` |
+| Prod | `./scripts/build.sh --prod` | `dist/OkBrainCC.app` | `com.okbraincc.app` | `~/okproxy` (install), `~/.okproxy` (logs), `~/okrun-switch` (install), `~/.okrun-switch` (logs), `~/okbraincc-backups` |
+
+Build and run the dev app:
+
+```bash
+./scripts/run.sh
+./scripts/run.sh --dev
+```
+
+Build and run the production app:
+
+```bash
+./scripts/run.sh --prod
+```
+
+Run the full test pass:
+
+```bash
+./scripts/test.sh
+```
+
+Dev/prod isolation covers:
+
+- Separate UserDefaults suites (dev uses `com.okbraincc.app.dev`)
+- Separate on-disk install/log/backup directories
+- Separate bundle IDs, so dev and prod apps can run side by side
+- `NODE_ENV=development` for dev services, `NODE_ENV=production` for prod services
+- Dev builds default to not auto-launching the configured OKRun VM app
+
+You can override the environment at runtime with `--dev`/`--prod` launch arguments or the `OKBRAINCC_ENV` environment variable.

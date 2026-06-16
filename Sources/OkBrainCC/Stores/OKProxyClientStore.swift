@@ -14,7 +14,7 @@ final class OKProxyClientStore: ObservableObject {
   @Published private(set) var latestLogLines = ""
   @Published private(set) var lastOperationOutput = ""
 
-  private let defaults = UserDefaults.standard
+  private let defaults = AppEnvironment.userDefaults
   private var process: Process?
   private var stopWasRequested = false
   private var logRefreshTimer: Timer?
@@ -334,7 +334,8 @@ final class OKProxyClientStore: ObservableObject {
       .appendingPathComponent(".local/bin", isDirectory: true)
       .path
     environment["PATH"] = "\(localBinPath):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    environment["NODE_ENV"] = "production"
+    environment["NODE_ENV"] = AppEnvironment.current.nodeEnvironment
+    environment["OKBRAINCC_ENV"] = AppEnvironment.current.rawValue
     clientProcess.environment = environment
 
     let pipe = Pipe()
