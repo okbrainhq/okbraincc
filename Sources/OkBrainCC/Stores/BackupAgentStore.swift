@@ -16,7 +16,7 @@ final class BackupAgentStore: ObservableObject {
   @Published private(set) var loadingSystemIDs = Set<BackupSystemID>()
   @Published private(set) var schedulerAnchorLoadedSystemIDs = Set<BackupSystemID>()
 
-  private let defaults = UserDefaults.standard
+  private let defaults = AppEnvironment.userDefaults
   private let isMockMode: Bool
   private var scheduler: Timer?
   private var activeProcesses: [BackupRun.ID: Process] = [:]
@@ -267,7 +267,10 @@ final class BackupAgentStore: ObservableObject {
       trigger: trigger,
       scriptName: definition.backupScriptName,
       arguments: [],
-      environment: ["OKBRAINCC_BACKUP_RETENTION_COUNT": "\(schedule(for: systemID).retentionCount)"],
+      environment: [
+        "OKBRAINCC_BACKUP_RETENTION_COUNT": "\(schedule(for: systemID).retentionCount)",
+        "OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path
+      ],
       detail: "\(definition.title) backup"
     )
   }
@@ -296,6 +299,7 @@ final class BackupAgentStore: ObservableObject {
       trigger: .manual,
       scriptName: definition.restoreScriptName,
       arguments: arguments,
+      environment: ["OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path],
       detail: "\(definition.title) restore: \(date), \(option.title)"
     )
   }

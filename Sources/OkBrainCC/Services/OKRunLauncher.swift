@@ -4,15 +4,22 @@ import Foundation
 enum OKRunLauncher {
   static let appPathKey = "okrunAppPath"
   static let autorunEnabledKey = "okrunAutorunEnabled"
-  static let defaultAutorunEnabled = true
-  static let defaultAppURL = URL(fileURLWithPath: "/Applications/OkrunVM.app")
 
-  static func configuredAppURL(defaults: UserDefaults = .standard) -> URL {
+  static var defaultAutorunEnabled: Bool {
+    AppEnvironment.current.isProduction
+  }
+
+  static var defaultAppURL: URL {
+    let suffix = AppEnvironment.current.stateDirectorySuffix
+    return URL(fileURLWithPath: "/Applications/OkrunVM\(suffix).app")
+  }
+
+  static func configuredAppURL(defaults: UserDefaults = AppEnvironment.userDefaults) -> URL {
     let configuredPath = defaults.string(forKey: appPathKey)
     return URL(fileURLWithPath: configuredPath ?? defaultAppURL.path)
   }
 
-  static func isAutorunEnabled(defaults: UserDefaults = .standard) -> Bool {
+  static func isAutorunEnabled(defaults: UserDefaults = AppEnvironment.userDefaults) -> Bool {
     guard let configuredValue = defaults.object(forKey: autorunEnabledKey) as? Bool else {
       return defaultAutorunEnabled
     }

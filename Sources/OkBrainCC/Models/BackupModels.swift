@@ -90,13 +90,22 @@ struct BackupSystemDefinition: Hashable, Identifiable {
   let subtitle: String
   let systemImage: String
   let remoteHost: String
-  let backupDirectoryName: String
   let backupScriptName: String
   let restoreScriptName: String
   let scheduleHour: Int
   let scheduleMinute: Int
   let components: [BackupComponentDefinition]
   let restoreOptions: [BackupRestoreOption]
+
+  var backupDirectoryName: String {
+    let root = "okbraincc-backups" + AppEnvironment.current.stateDirectorySuffix
+    switch id {
+    case .prodbox:
+      return "\(root)/prodbox"
+    case .prodboxSandbox:
+      return "\(root)/prodbox-sandbox"
+    }
+  }
 
   var backupDirectoryURL: URL {
     FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(backupDirectoryName, isDirectory: true)
@@ -127,7 +136,6 @@ extension BackupSystemDefinition {
     subtitle: "prodbox.local",
     systemImage: "server.rack",
     remoteHost: "arunoda@prodbox.local",
-    backupDirectoryName: "okbraincc-backups/prodbox",
     backupScriptName: "backup-prodbox.sh",
     restoreScriptName: "restore-prodbox.sh",
     scheduleHour: 3,
@@ -193,7 +201,6 @@ extension BackupSystemDefinition {
     subtitle: "prodbox-sandbox.local",
     systemImage: "shippingbox",
     remoteHost: "arunoda@prodbox-sandbox.local",
-    backupDirectoryName: "okbraincc-backups/prodbox-sandbox",
     backupScriptName: "backup-prodbox-sandbox.sh",
     restoreScriptName: "restore-prodbox-sandbox.sh",
     scheduleHour: 3,

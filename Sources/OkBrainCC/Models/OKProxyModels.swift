@@ -26,14 +26,18 @@ struct OKProxySettings: Codable, Hashable {
 
   static let repoURL = "https://github.com/okbrainhq/okproxy"
 
-  static let installURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("okproxy", isDirectory: true)
+  static var installURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("okproxy" + AppEnvironment.current.stateDirectorySuffix, isDirectory: true)
+  }
 
   static let localNodeURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".local/bin/node", isDirectory: false)
 
-  static let logURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent(".okproxy/logs/client.log", isDirectory: false)
+  static var logURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".okproxy" + AppEnvironment.current.stateDirectorySuffix + "/logs/client.log", isDirectory: false)
+  }
 
   static let defaults = OKProxySettings(
     serverHost: "",

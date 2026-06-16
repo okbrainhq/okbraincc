@@ -8,8 +8,10 @@ struct OKRunLocalSwitchSettings: Codable, Hashable {
   static let repoURL = "https://github.com/okbrainhq/okrun.git"
   static let sourceURL = "https://github.com/okbrainhq/okrun/tree/main/web-switch"
 
-  static let installURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent("okrun-switch", isDirectory: true)
+  static var installURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent("okrun-switch" + AppEnvironment.current.stateDirectorySuffix, isDirectory: true)
+  }
 
   static var webSwitchURL: URL {
     installURL.appendingPathComponent("web-switch", isDirectory: true)
@@ -18,8 +20,10 @@ struct OKRunLocalSwitchSettings: Codable, Hashable {
   static let localNodeURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent(".local/bin/node", isDirectory: false)
 
-  static let logURL = FileManager.default.homeDirectoryForCurrentUser
-    .appendingPathComponent(".okrun-switch/logs/local-switch.log", isDirectory: false)
+  static var logURL: URL {
+    FileManager.default.homeDirectoryForCurrentUser
+      .appendingPathComponent(".okrun-switch" + AppEnvironment.current.stateDirectorySuffix + "/logs/local-switch.log", isDirectory: false)
+  }
 
   static let defaults = OKRunLocalSwitchSettings(
     host: "127.0.0.1",

@@ -52,6 +52,7 @@ enum BackupScriptRunner {
       var environment = ProcessInfo.processInfo.environment
       environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
       environment["OKBRAINCC_BACKUP_AGENT"] = "1"
+      environment["OKBRAINCC_ENV"] = AppEnvironment.current.rawValue
       for (key, value) in extraEnvironment {
         environment[key] = value
       }

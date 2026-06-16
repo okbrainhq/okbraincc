@@ -14,7 +14,7 @@ final class OKRunLocalSwitchStore: ObservableObject {
   @Published private(set) var latestLogLines = ""
   @Published private(set) var lastOperationOutput = ""
 
-  private let defaults = UserDefaults.standard
+  private let defaults = AppEnvironment.userDefaults
   private var process: Process?
   private var stopWasRequested = false
   private var logRefreshTimer: Timer?
@@ -320,7 +320,8 @@ final class OKRunLocalSwitchStore: ObservableObject {
       .appendingPathComponent(".local/bin", isDirectory: true)
       .path
     environment["PATH"] = "\(localBinPath):/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    environment["NODE_ENV"] = "production"
+    environment["NODE_ENV"] = AppEnvironment.current.nodeEnvironment
+    environment["OKBRAINCC_ENV"] = AppEnvironment.current.rawValue
     environment["OKRUN_SWITCH_TLS_ENABLED"] = "false"
     environment["OKRUN_SWITCH_HOST"] = settings.trimmedHost
     environment["OKRUN_SWITCH_LOCAL_PORT"] = settings.trimmedPort

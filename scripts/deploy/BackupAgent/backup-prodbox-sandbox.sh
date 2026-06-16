@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REMOTE_HOST="arunoda@prodbox-sandbox.local"
-BACKUP_ROOT="$HOME/okbraincc-backups/prodbox-sandbox"
+BACKUP_ROOT="${OKBRAINCC_BACKUP_ROOT:-$HOME/okbraincc-backups/prodbox-sandbox}"
 RUNS_DIR="$BACKUP_ROOT/runs"
 RETENTION_COUNT="${OKBRAINCC_BACKUP_RETENTION_COUNT:-30}"
 
