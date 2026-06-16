@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_HOST="arunoda@prodbox.local"
+REMOTE_HOST="${OKBRAINCC_BACKUP_REMOTE_HOST:-arunoda@prodbox.local}"
 BACKUP_ROOT="${OKBRAINCC_BACKUP_ROOT:-$HOME/okbraincc-backups/prodbox}"
 RUNS_DIR="$BACKUP_ROOT/runs"
 REMOTE_DB="/var/www/brain/brain.db"

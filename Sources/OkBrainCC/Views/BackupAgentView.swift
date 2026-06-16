@@ -142,7 +142,7 @@ struct BackupAgentView: View {
 
       Button("Cancel", role: .cancel) {}
     } message: {
-      Text("Restore \(restoreOption.title.lowercased()) on \(definition.remoteHost) from \(itemPendingRestore?.title ?? "selected backup").")
+      Text("Restore \(restoreOption.title.lowercased()) on \(store.remoteHost(for: definition.id)) from \(itemPendingRestore?.title ?? "selected backup").")
     }
   }
 
@@ -154,7 +154,7 @@ struct BackupAgentView: View {
             .font(.title2.weight(.semibold))
 
           TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            Text("\(definition.subtitle) · \(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))")
+            Text("\(store.remoteHost(for: definition.id)) · \(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))")
               .foregroundStyle(.secondary)
           }
         }
@@ -511,108 +511,130 @@ private struct BackupSettingsView: View {
   @ObservedObject var store: BackupAgentStore
 
   @Environment(\.dismiss) private var dismiss
+  @State private var editingRemoteHost: String = ""
 
   private var schedule: BackupScheduleSettings {
     store.schedule(for: definition.id)
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      HStack(alignment: .firstTextBaseline) {
-        VStack(alignment: .leading, spacing: 3) {
-          Text("\(definition.title) Settings")
-            .font(.title2.weight(.semibold))
-          Text(definition.subtitle)
-            .foregroundStyle(.secondary)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 18) {
+        HStack(alignment: .firstTextBaseline) {
+          VStack(alignment: .leading, spacing: 3) {
+            Text("\(definition.title) Settings")
+              .font(.title2.weight(.semibold))
+            Text(store.remoteHost(for: definition.id))
+              .foregroundStyle(.secondary)
+          }
+
+          Spacer()
+
+          Button("Done") {
+            saveRemoteHostIfNeeded()
+            dismiss()
+          }
+          .keyboardShortcut(.defaultAction)
+          .accessibilityLabel("Done")
         }
+
+        VStack(alignment: .leading, spacing: 14) {
+          VStack(alignment: .leading, spacing: 6) {
+            Text("SSH Host")
+              .foregroundStyle(.secondary)
+            TextField("user@host.local", text: $editingRemoteHost)
+              .textFieldStyle(.roundedBorder)
+              .font(.callout.monospaced())
+              .onSubmit { saveRemoteHostIfNeeded() }
+          }
+
+          Toggle(
+            "Run automatically",
+            isOn: Binding(
+              get: { schedule.isEnabled },
+              set: { store.updateSchedule(systemID: definition.id, isEnabled: $0) }
+            )
+          )
+          .toggleStyle(.checkbox)
+
+          HStack(spacing: 12) {
+            Picker(
+              "Hours",
+              selection: Binding(
+                get: { schedule.intervalHoursComponent },
+                set: { updateInterval(hours: $0) }
+              )
+            ) {
+              ForEach(0...24, id: \.self) { hour in
+                Text(String(format: "%02d", hour)).tag(hour)
+              }
+            }
+            .frame(width: 130)
+
+            Picker(
+              "Minutes",
+              selection: Binding(
+                get: { schedule.intervalMinuteComponent },
+                set: { updateInterval(minutes: $0) }
+              )
+            ) {
+              ForEach(0..<60, id: \.self) { minute in
+                Text(String(format: "%02d", minute)).tag(minute)
+              }
+            }
+            .frame(width: 140)
+          }
+
+          Stepper(
+            value: Binding(
+              get: { schedule.retentionCount },
+              set: { store.updateSchedule(systemID: definition.id, retentionCount: $0) }
+            ),
+            in: 1...365
+          ) {
+            Text("Keep \(schedule.retentionCount) backups")
+          }
+        }
+        .padding(16)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+
+        Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+          GridRow {
+            Text("Next Backup")
+              .foregroundStyle(.secondary)
+            TimelineView(.periodic(from: .now, by: 60)) { timeline in
+              Text(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+            }
+          }
+          settingsRow("Interval", schedule.intervalLabel)
+          settingsRow("Runner", "In-app timer")
+          settingsRow("Original Cron", "\(definition.scheduleMinute) \(definition.scheduleHour) * * *")
+          settingsRow("Backups to Keep", "\(schedule.retentionCount)")
+          settingsRow("Original Schedule", definition.scheduleLabel)
+          settingsRow("Default Host", definition.remoteHost)
+          settingsRow("Backup Script", definition.backupScriptName)
+          settingsRow("Restore Script", definition.restoreScriptName)
+          settingsRow("Backup Directory", definition.backupDirectoryURL.path)
+        }
+        .padding(16)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
         Spacer()
-
-        Button("Done") {
-          dismiss()
-        }
-        .keyboardShortcut(.defaultAction)
-        .accessibilityLabel("Done")
       }
-
-      VStack(alignment: .leading, spacing: 14) {
-        Toggle(
-          "Run automatically",
-          isOn: Binding(
-            get: { schedule.isEnabled },
-            set: { store.updateSchedule(systemID: definition.id, isEnabled: $0) }
-          )
-        )
-        .toggleStyle(.checkbox)
-
-        HStack(spacing: 12) {
-          Picker(
-            "Hours",
-            selection: Binding(
-              get: { schedule.intervalHoursComponent },
-              set: { updateInterval(hours: $0) }
-            )
-          ) {
-            ForEach(0...24, id: \.self) { hour in
-              Text(String(format: "%02d", hour)).tag(hour)
-            }
-          }
-          .frame(width: 130)
-
-          Picker(
-            "Minutes",
-            selection: Binding(
-              get: { schedule.intervalMinuteComponent },
-              set: { updateInterval(minutes: $0) }
-            )
-          ) {
-            ForEach(0..<60, id: \.self) { minute in
-              Text(String(format: "%02d", minute)).tag(minute)
-            }
-          }
-          .frame(width: 140)
-        }
-
-        Stepper(
-          value: Binding(
-            get: { schedule.retentionCount },
-            set: { store.updateSchedule(systemID: definition.id, retentionCount: $0) }
-          ),
-          in: 1...365
-        ) {
-          Text("Keep \(schedule.retentionCount) backups")
-        }
-      }
-      .padding(16)
-      .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
-
-      Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
-        GridRow {
-          Text("Next Backup")
-            .foregroundStyle(.secondary)
-          TimelineView(.periodic(from: .now, by: 60)) { timeline in
-            Text(store.nextBackupCountdownLabel(for: definition.id, now: timeline.date))
-              .font(.callout.monospaced())
-              .textSelection(.enabled)
-          }
-        }
-        settingsRow("Interval", schedule.intervalLabel)
-        settingsRow("Runner", "In-app timer")
-        settingsRow("Original Cron", "\(definition.scheduleMinute) \(definition.scheduleHour) * * *")
-        settingsRow("Backups to Keep", "\(schedule.retentionCount)")
-        settingsRow("Original Schedule", definition.scheduleLabel)
-        settingsRow("Remote Host", definition.remoteHost)
-        settingsRow("Backup Script", definition.backupScriptName)
-        settingsRow("Restore Script", definition.restoreScriptName)
-        settingsRow("Backup Directory", definition.backupDirectoryURL.path)
-      }
-      .padding(16)
-      .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
-
-      Spacer()
+      .padding(24)
     }
-    .padding(24)
-    .frame(width: 620, height: 460, alignment: .topLeading)
+    .frame(minWidth: 760, minHeight: 560)
+    .onAppear {
+      editingRemoteHost = store.remoteHost(for: definition.id)
+    }
+  }
+
+  private func saveRemoteHostIfNeeded() {
+    let trimmed = editingRemoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != store.remoteHost(for: definition.id) else { return }
+    store.updateRemoteHost(systemID: definition.id, host: trimmed)
   }
 
   private func updateInterval(hours: Int? = nil, minutes: Int? = nil) {

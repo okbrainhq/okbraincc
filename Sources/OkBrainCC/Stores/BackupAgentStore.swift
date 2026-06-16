@@ -13,6 +13,7 @@ final class BackupAgentStore: ObservableObject {
   @Published private(set) var restoreDates: [BackupSystemID: [String]] = [:]
   @Published private(set) var runLogs: [BackupSystemID: [String: String]] = [:]
   @Published private(set) var runComponents: [BackupSystemID: [String: [BackupComponentStatus]]] = [:]
+  @Published private(set) var remoteHosts: [BackupSystemID: String] = [:]
   @Published private(set) var loadingSystemIDs = Set<BackupSystemID>()
   @Published private(set) var schedulerAnchorLoadedSystemIDs = Set<BackupSystemID>()
 
@@ -27,6 +28,7 @@ final class BackupAgentStore: ObservableObject {
   private init() {
     isMockMode = Self.detectMockMode()
     schedules = Self.loadSchedules(defaults: defaults)
+    remoteHosts = Self.loadRemoteHosts(defaults: defaults)
     runs = isMockMode ? Self.mockRuns() : []
     restoreDates = isMockMode ? Self.mockRestoreDates() : [:]
     if isMockMode {
@@ -254,6 +256,17 @@ final class BackupAgentStore: ObservableObject {
     restoreDates[systemID] = restoreDates[systemID].map { Array($0.prefix(next.retentionCount)) }
   }
 
+  func remoteHost(for systemID: BackupSystemID) -> String {
+    remoteHosts[systemID] ?? BackupSystemDefinition.definition(for: systemID).remoteHost
+  }
+
+  func updateRemoteHost(systemID: BackupSystemID, host: String) {
+    let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    defaults.set(trimmed, forKey: Self.remoteHostKey(for: systemID))
+    remoteHosts[systemID] = trimmed
+  }
+
   @discardableResult
   func runBackup(systemID: BackupSystemID, trigger: BackupRunTrigger = .manual) -> BackupRun.ID? {
     if isMockMode {
@@ -269,7 +282,8 @@ final class BackupAgentStore: ObservableObject {
       arguments: [],
       environment: [
         "OKBRAINCC_BACKUP_RETENTION_COUNT": "\(schedule(for: systemID).retentionCount)",
-        "OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path
+        "OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path,
+        "OKBRAINCC_BACKUP_REMOTE_HOST": remoteHost(for: systemID)
       ],
       detail: "\(definition.title) backup"
     )
@@ -299,7 +313,7 @@ final class BackupAgentStore: ObservableObject {
       trigger: .manual,
       scriptName: definition.restoreScriptName,
       arguments: arguments,
-      environment: ["OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path],
+      environment: ["OKBRAINCC_BACKUP_ROOT": definition.backupDirectoryURL.path, "OKBRAINCC_BACKUP_REMOTE_HOST": remoteHost(for: systemID)],
       detail: "\(definition.title) restore: \(date), \(option.title)"
     )
   }
@@ -674,6 +688,20 @@ final class BackupAgentStore: ObservableObject {
 
   private static func retentionCountKey(for systemID: BackupSystemID) -> String {
     "backupAgent.retentionCount.\(systemID.rawValue)"
+  }
+
+  private static func remoteHostKey(for systemID: BackupSystemID) -> String {
+    "backupAgent.remoteHost.\(systemID.rawValue)"
+  }
+
+  private static func loadRemoteHosts(defaults: UserDefaults) -> [BackupSystemID: String] {
+    var result: [BackupSystemID: String] = [:]
+    for systemID in BackupSystemID.allCases {
+      if let host = defaults.string(forKey: remoteHostKey(for: systemID)) {
+        result[systemID] = host
+      }
+    }
+    return result
   }
 
   @discardableResult
