@@ -28,6 +28,8 @@ struct DetailView: View {
         BackupAgentView(definition: .prodbox)
       case .backupSandbox:
         BackupAgentView(definition: .prodboxSandbox)
+      case .dbMaintenance:
+        DBMaintenanceView()
       }
 
       Spacer()

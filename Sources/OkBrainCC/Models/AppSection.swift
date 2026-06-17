@@ -6,6 +6,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
   case okRunLocalSwitch
   case backupProdbox
   case backupSandbox
+  case dbMaintenance
 
   var id: String {
     rawValue
@@ -23,6 +24,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
       "Backup: Prodbox"
     case .backupSandbox:
       "Backup: Sandbox"
+    case .dbMaintenance:
+      "DB Maintenance"
     }
   }
 
@@ -38,6 +41,8 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
       "externaldrive"
     case .backupSandbox:
       "shippingbox"
+    case .dbMaintenance:
+      "externaldrive.badge.xmark"
     }
   }
 }
