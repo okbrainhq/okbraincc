@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     NSApp.activate(ignoringOtherApps: true)
     OKRunLauncher.launchConfiguredAppIfNeeded()
     BackupAgentStore.shared.startScheduler()
+    DBMaintenanceStore.shared.startScheduler()
     OKProxyClientStore.shared.startIfEnabled()
     OKRunLocalSwitchStore.shared.startIfEnabled()
   }
