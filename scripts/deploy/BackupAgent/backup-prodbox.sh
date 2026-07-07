@@ -27,7 +27,6 @@ STARTED_AT="$(date '+%Y-%m-%d %H:%M:%S')"
 
 mkdir -p "$DATA_DIR/db"
 mkdir -p "$DATA_DIR/brain-data"
-mkdir -p "$DATA_DIR/brain-uploads"
 
 write_metadata() {
   cat >"$METADATA_FILE" <<EOF
@@ -122,7 +121,6 @@ ssh "$REMOTE_HOST" "rm -f '$REMOTE_BACKUP'"
 log "Database backup saved: $LOCAL_DB ($(du -h "$LOCAL_DB" | cut -f1))"
 
 sync_snapshot "brain-data" "/var/www/brain-data/" "brain-data"
-sync_snapshot "brain-uploads" "/var/www/brain-data/uploads/" "brain-uploads"
 
 if ssh "$REMOTE_HOST" "test -d /home/brain-sandbox/apps" 2>/dev/null; then
   sync_snapshot "brain-sandbox/apps" "/home/brain-sandbox/apps/" "brain-sandbox/apps" "sudo rsync"

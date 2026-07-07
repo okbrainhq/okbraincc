@@ -6,7 +6,6 @@ BACKUP_ROOT="${OKBRAINCC_BACKUP_ROOT:-$HOME/okbraincc-backups/prodbox}"
 RUNS_DIR="$BACKUP_ROOT/runs"
 REMOTE_DB="/var/www/brain/brain.db"
 REMOTE_DATA="/var/www/brain-data/"
-REMOTE_UPLOADS="/var/www/brain-data/uploads/"
 REMOTE_SANDBOX_APPS="/home/brain-sandbox/apps/"
 REMOTE_SANDBOX_SKILLS="/home/brain-sandbox/skills/"
 REMOTE_SANDBOX_IMAGES="/home/brain-sandbox/upload_images/"
@@ -46,7 +45,7 @@ for arg in "$@"; do
     --yes)
       ASSUME_YES="1"
       ;;
-    --db-only|--data-only|--uploads-only|--sandbox-only|--sandbox-skills-only|--sandbox-images-only)
+    --db-only|--data-only|--sandbox-only|--sandbox-skills-only|--sandbox-images-only)
       FILTER="$arg"
       ;;
     *)
@@ -95,7 +94,6 @@ resolve_run_dir
 DATA_ROOT="$RUN_DIR/data"
 DB_FILE="$DATA_ROOT/db/brain.db"
 DATA_DIR="$DATA_ROOT/brain-data"
-UPLOADS_DIR="$DATA_ROOT/brain-uploads"
 SANDBOX_APPS_DIR="$DATA_ROOT/brain-sandbox/apps"
 SANDBOX_SKILLS_DIR="$DATA_ROOT/brain-sandbox/skills"
 SANDBOX_IMAGES_DIR="$DATA_ROOT/brain-sandbox/upload-images"
@@ -103,7 +101,6 @@ SANDBOX_IMAGES_DIR="$DATA_ROOT/brain-sandbox/upload-images"
 MISSING=()
 if selected "--db-only" && [ ! -f "$DB_FILE" ]; then MISSING+=("database: $DB_FILE"); fi
 if selected "--data-only" && [ ! -d "$DATA_DIR" ]; then MISSING+=("brain-data: $DATA_DIR"); fi
-if selected "--uploads-only" && [ ! -d "$UPLOADS_DIR" ]; then MISSING+=("brain-uploads: $UPLOADS_DIR"); fi
 if [ "$FILTER" = "--sandbox-only" ] && [ ! -d "$SANDBOX_APPS_DIR" ]; then MISSING+=("sandbox apps: $SANDBOX_APPS_DIR"); fi
 if [ "$FILTER" = "--sandbox-skills-only" ] && [ ! -d "$SANDBOX_SKILLS_DIR" ]; then MISSING+=("sandbox skills: $SANDBOX_SKILLS_DIR"); fi
 if [ "$FILTER" = "--sandbox-images-only" ] && [ ! -d "$SANDBOX_IMAGES_DIR" ]; then MISSING+=("sandbox images: $SANDBOX_IMAGES_DIR"); fi
@@ -120,7 +117,6 @@ echo "=== Restore from $RUN_ID ==="
 echo "This will restore to $REMOTE_HOST:"
 if selected "--db-only"; then echo "  - Database: $DB_FILE -> $REMOTE_DB"; fi
 if selected "--data-only"; then echo "  - brain-data: $DATA_DIR/ -> $REMOTE_DATA"; fi
-if selected "--uploads-only"; then echo "  - brain-uploads: $UPLOADS_DIR/ -> $REMOTE_UPLOADS"; fi
 if selected "--sandbox-only"; then
   if [ -d "$SANDBOX_APPS_DIR" ] && directory_has_entries "$SANDBOX_APPS_DIR"; then
     echo "  - brain-sandbox/apps: $SANDBOX_APPS_DIR/ -> $REMOTE_SANDBOX_APPS"
@@ -208,10 +204,6 @@ fi
 
 if selected "--data-only"; then
   restore_directory "brain-data" "$DATA_DIR" "$REMOTE_DATA"
-fi
-
-if selected "--uploads-only"; then
-  restore_directory "brain-uploads" "$UPLOADS_DIR" "$REMOTE_UPLOADS"
 fi
 
 if selected "--sandbox-only"; then

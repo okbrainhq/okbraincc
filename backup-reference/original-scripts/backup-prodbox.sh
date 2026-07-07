@@ -7,8 +7,7 @@
 # Backs up:
 #   1. SQLite database (safe .backup snapshot)
 #   2. /var/www/brain-data/ (chat uploads, chat-data, smart-doc-data)
-#   3. /var/www/brain-data/uploads/ (docs system uploads)
-#   4. /home/brain-sandbox/apps/ (sandbox apps)
+#   3. /home/brain-sandbox/apps/ (sandbox apps)
 #
 # Uses rsync --link-dest for space-efficient snapshots.
 # Retains 30 days of backups.
@@ -26,7 +25,6 @@ DATE=$(date +%Y-%m-%d)
 
 mkdir -p "$BACKUP_DIR/db"
 mkdir -p "$BACKUP_DIR/brain-data"
-mkdir -p "$BACKUP_DIR/brain-uploads"
 mkdir -p "$BACKUP_DIR/brain-sandbox"
 
 log() {
@@ -69,25 +67,7 @@ touch "$DEST"
 ln -snf "$DATE" "$BACKUP_DIR/brain-data/latest"
 log "brain-data backup saved: $DEST ($(du -sh "$DEST" | cut -f1))"
 
-# ── 3. brain-uploads backup (docs system) ──────────────────
-DEST="$BACKUP_DIR/brain-uploads/$DATE"
-LINK_DEST="$BACKUP_DIR/brain-uploads/latest"
-
-mkdir -p "$DEST"
-
-if [ -d "$LINK_DEST" ]; then
-    log "Syncing brain-uploads with link-dest from latest..."
-    rsync -az --delete --link-dest="$LINK_DEST" "$REMOTE_HOST:/var/www/brain-data/uploads/" "$DEST/"
-else
-    log "Syncing brain-uploads (first run, no link-dest)..."
-    rsync -az --delete "$REMOTE_HOST:/var/www/brain-data/uploads/" "$DEST/"
-fi
-
-touch "$DEST"
-ln -snf "$DATE" "$BACKUP_DIR/brain-uploads/latest"
-log "brain-uploads backup saved: $DEST ($(du -sh "$DEST" | cut -f1))"
-
-# ── 4. brain-sandbox/apps backup ─────────────────────────────
+# ── 3. brain-sandbox/apps backup ─────────────────────────────
 DEST="$BACKUP_DIR/brain-sandbox/$DATE"
 LINK_DEST="$BACKUP_DIR/brain-sandbox/latest"
 
@@ -158,11 +138,6 @@ done
 # Remove old brain-data snapshots
 find "$BACKUP_DIR/brain-data" -maxdepth 1 -mindepth 1 -type d -name "20*" -mtime +$RETENTION_DAYS -exec rm -rf {} \; -print | while read f; do
     log "Removed old brain-data snapshot: $f"
-done
-
-# Remove old brain-uploads snapshots
-find "$BACKUP_DIR/brain-uploads" -maxdepth 1 -mindepth 1 -type d -name "20*" -mtime +$RETENTION_DAYS -exec rm -rf {} \; -print | while read f; do
-    log "Removed old brain-uploads snapshot: $f"
 done
 
 # Remove old brain-sandbox snapshots

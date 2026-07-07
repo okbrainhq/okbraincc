@@ -9,7 +9,6 @@
 #   ./restore-prodbox.sh 2026-03-11       # restore from a specific date
 #   ./restore-prodbox.sh 2026-03-11 --db-only      # restore only the database
 #   ./restore-prodbox.sh 2026-03-11 --data-only     # restore only brain-data
-#   ./restore-prodbox.sh 2026-03-11 --uploads-only   # restore only brain-uploads
 #   ./restore-prodbox.sh 2026-03-11 --sandbox-only   # restore only brain-sandbox
 
 set -e
@@ -19,7 +18,6 @@ REMOTE_HOST="arunoda@prodbox.local"
 BACKUP_DIR="$HOME/prodbox-backups"
 REMOTE_DB="/var/www/brain/brain.db"
 REMOTE_DATA="/var/www/brain-data/"
-REMOTE_UPLOADS="/var/www/brain-data/uploads/"
 REMOTE_SANDBOX="/home/brain-sandbox/apps/"
 APP_NAME="brain"
 # ───────────────────────────────────────────────────────────────
@@ -41,13 +39,11 @@ fi
 # Validate backup exists
 DB_FILE="$BACKUP_DIR/db/brain-$DATE.db"
 DATA_DIR="$BACKUP_DIR/brain-data/$DATE"
-UPLOADS_DIR="$BACKUP_DIR/brain-uploads/$DATE"
 SANDBOX_DIR="$BACKUP_DIR/brain-sandbox/$DATE"
 
 MISSING=()
 [ ! -f "$DB_FILE" ] && MISSING+=("db: $DB_FILE")
 [ ! -d "$DATA_DIR" ] && MISSING+=("brain-data: $DATA_DIR")
-[ ! -d "$UPLOADS_DIR" ] && MISSING+=("brain-uploads: $UPLOADS_DIR")
 [ ! -d "$SANDBOX_DIR" ] && MISSING+=("brain-sandbox: $SANDBOX_DIR")
 
 if [ ${#MISSING[@]} -gt 0 ] && [ -z "$FILTER" ]; then
@@ -64,7 +60,6 @@ echo ""
 echo "This will restore to $REMOTE_HOST:"
 [ -z "$FILTER" ] || [ "$FILTER" = "--db-only" ] && echo "  - Database: $DB_FILE → $REMOTE_DB"
 [ -z "$FILTER" ] || [ "$FILTER" = "--data-only" ] && echo "  - brain-data: $DATA_DIR/ → $REMOTE_DATA"
-[ -z "$FILTER" ] || [ "$FILTER" = "--uploads-only" ] && echo "  - brain-uploads: $UPLOADS_DIR/ → $REMOTE_UPLOADS"
 [ -z "$FILTER" ] || [ "$FILTER" = "--sandbox-only" ] && echo "  - brain-sandbox/apps: $SANDBOX_DIR/ → $REMOTE_SANDBOX"
 echo ""
 echo "WARNING: This will overwrite current data on the VM."
@@ -104,18 +99,7 @@ if [ -z "$FILTER" ] || [ "$FILTER" = "--data-only" ]; then
     fi
 fi
 
-# ── 4. Restore brain-uploads ────────────────────────────────
-if [ -z "$FILTER" ] || [ "$FILTER" = "--uploads-only" ]; then
-    if [ ! -d "$UPLOADS_DIR" ]; then
-        echo "Skipping brain-uploads restore: $UPLOADS_DIR not found"
-    else
-        echo "Restoring brain-uploads..."
-        rsync -az --delete "$UPLOADS_DIR/" "$REMOTE_HOST:$REMOTE_UPLOADS"
-        echo "brain-uploads restored."
-    fi
-fi
-
-# ── 5. Restore brain-sandbox ─────────────────────────────────
+# ── 4. Restore brain-sandbox ─────────────────────────────────
 if [ -z "$FILTER" ] || [ "$FILTER" = "--sandbox-only" ]; then
     if [ ! -d "$SANDBOX_DIR" ]; then
         echo "Skipping brain-sandbox restore: $SANDBOX_DIR not found"
