@@ -146,7 +146,6 @@ BACKUP_DIR="$HOME/prodbox-backups"
 if [ -d "$BACKUP_DIR" ]; then
     check_db_backup "$BACKUP_DIR/db"
     check_backup_dir "$BACKUP_DIR/brain-data" "brain-data"
-    check_backup_dir "$BACKUP_DIR/brain-uploads" "brain-uploads"
     check_backup_dir "$BACKUP_DIR/brain-sandbox" "brain-sandbox/apps"
     check_backup_dir "$BACKUP_DIR/brain-sandbox-skills" "brain-sandbox/skills"
     check_backup_dir "$BACKUP_DIR/brain-sandbox-upload-images" "brain-sandbox/upload_images"

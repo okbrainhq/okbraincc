@@ -23,7 +23,6 @@ Both use `rsync --link-dest` for space-efficient snapshots and `sqlite3 .backup`
 |---|---|---|
 | `/var/www/brain/brain.db` | `~/prodbox-backups/db/brain-YYYY-MM-DD.db` | `sqlite3 .backup` → `scp` |
 | `/var/www/brain-data/` | `~/prodbox-backups/brain-data/YYYY-MM-DD/` | `rsync --link-dest` |
-| `/var/www/brain-data/uploads/` | `~/prodbox-backups/brain-uploads/YYYY-MM-DD/` | `rsync --link-dest` |
 | `/home/brain-sandbox/apps/` | `~/prodbox-backups/brain-sandbox/YYYY-MM-DD/` | `rsync --link-dest` (sudo) |
 | `/home/brain-sandbox/skills/` | `~/prodbox-backups/brain-sandbox-skills/YYYY-MM-DD/` | `rsync --link-dest` (sudo) |
 | `/home/brain-sandbox/upload_images/` | `~/prodbox-backups/brain-sandbox-upload-images/YYYY-MM-DD/` | `rsync --link-dest` (sudo) |
@@ -53,7 +52,6 @@ From `macbook-air.local:2222`:
 - Disk usage on the Mac:
   - `~/prodbox-backups/db`: 6.1G (database snapshots)
   - `~/prodbox-backups/brain-data`: 22M
-  - `~/prodbox-backups/brain-uploads`: 38M
   - `~/prodbox-backups/brain-sandbox`: 206M
   - `~/prodbox-backups/brain-sandbox-skills`: 0B
   - `~/prodbox-backups/brain-sandbox-upload-images`: 120K
@@ -76,11 +74,6 @@ From `macbook-air.local:2222`:
     brain-2026-05-24.db
     ...
   brain-data/
-    2026-05-25/
-    2026-05-24/
-    ...
-    latest -> 2026-05-25
-  brain-uploads/
     2026-05-25/
     2026-05-24/
     ...
@@ -182,7 +175,7 @@ Restore runs **from the Mac** and **pushes to the VM**:
 4. Fix ownership for sandbox: `ssh host "sudo chown -R brain-sandbox:brain-sandbox /home/brain-sandbox/apps/"`
 5. Start app: `ssh host "sudo systemctl start brain"`
 
-Restore supports partial restores via flags: `--db-only`, `--data-only`, `--uploads-only`, `--sandbox-only`, etc.
+Restore supports partial restores via flags: `--db-only`, `--data-only`, `--sandbox-only`, etc.
 
 ### 6. Status Check
 
@@ -257,7 +250,7 @@ These are the **exact** files running on the MacBook, verified via `diff` agains
 - [ ] Create date-stamped directories (`YYYY-MM-DD`).
 - [ ] Manage `latest` symlinks after successful backup.
 - [ ] Implement 30-day retention cleanup.
-- [ ] Implement restore methods (full + partial: db-only, data-only, uploads-only, sandbox-only).
+- [ ] Implement restore methods (full + partial: db-only, data-only, sandbox-only).
 - [ ] Add a status/dashboard view showing last backup, snapshot count, disk usage, and errors.
 - [ ] Schedule daily runs using `BGTaskScheduler` (or `Timer` if simpler).
 - [ ] Add manual "Backup Now" and "Restore..." buttons.

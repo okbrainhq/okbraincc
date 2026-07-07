@@ -156,13 +156,6 @@ extension BackupSystemDefinition {
         isRequired: true
       ),
       BackupComponentDefinition(
-        id: "brain-uploads",
-        title: "Brain Uploads",
-        relativePath: "data/brain-uploads",
-        kind: .directory,
-        isRequired: true
-      ),
-      BackupComponentDefinition(
         id: "brain-sandbox",
         title: "Sandbox Apps",
         relativePath: "data/brain-sandbox/apps",
@@ -188,7 +181,6 @@ extension BackupSystemDefinition {
       BackupRestoreOption(id: "full", title: "Full Restore", argument: nil),
       BackupRestoreOption(id: "db", title: "Database", argument: "--db-only"),
       BackupRestoreOption(id: "data", title: "Brain Data", argument: "--data-only"),
-      BackupRestoreOption(id: "uploads", title: "Brain Uploads", argument: "--uploads-only"),
       BackupRestoreOption(id: "sandbox", title: "Sandbox Apps", argument: "--sandbox-only"),
       BackupRestoreOption(id: "sandbox-skills", title: "Sandbox Skills", argument: "--sandbox-skills-only"),
       BackupRestoreOption(id: "sandbox-images", title: "Sandbox Images", argument: "--sandbox-images-only")
