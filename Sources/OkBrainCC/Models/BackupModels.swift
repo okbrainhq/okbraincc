@@ -261,6 +261,53 @@ struct BackupSystemStatus: Hashable {
   let stderrLogTail: String
 }
 
+// MARK: - Backup Manifest (sidecar JSON for zip-based backups)
+
+struct BackupManifestComponent: Codable, Hashable {
+  let id: String
+  let title: String
+  let relativePath: String
+  let size: String
+  let exists: Bool
+
+  enum CodingKeys: String, CodingKey {
+    case id, title, size, exists
+    case relativePath = "relative_path"
+  }
+}
+
+struct BackupManifest: Codable, Hashable {
+  let system: String
+  let runID: String
+  let status: String
+  let startedAt: String
+  let finishedAt: String
+  let remoteHost: String
+  let zipFile: String
+  let zipSizeBytes: Int
+  let components: [BackupManifestComponent]
+  let backupLogTail: String
+  let stdoutLogTail: String
+  let stderrLogTail: String
+
+  enum CodingKeys: String, CodingKey {
+    case system, status, components
+    case runID = "run_id"
+    case startedAt = "started_at"
+    case finishedAt = "finished_at"
+    case remoteHost = "remote_host"
+    case zipFile = "zip_file"
+    case zipSizeBytes = "zip_size_bytes"
+    case backupLogTail = "backup_log_tail"
+    case stdoutLogTail = "stdout_log_tail"
+    case stderrLogTail = "stderr_log_tail"
+  }
+
+  var isSuccess: Bool {
+    status == "success"
+  }
+}
+
 struct BackupScheduleSettings: Hashable {
   let isEnabled: Bool
   let intervalMinutes: Int

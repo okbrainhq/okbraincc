@@ -18,37 +18,65 @@ enum BackupFilesystemLoader {
       return nil
     }
 
-    let newestRunURL = runsDirectoryURL(for: definition).appendingPathComponent(newestRunID, isDirectory: true)
-    let newestMetadata = metadata(in: newestRunURL)
-    let backupLogTail = tail(of: newestRunURL.appendingPathComponent("backup.log", isDirectory: false))
+    if let manifest = loadManifest(for: definition, runID: newestRunID) {
+      return timestampFormatter.date(from: manifest.finishedAt) ?? runDate(from: newestRunID)
+    }
 
-    return metadataDate("finished_at", in: newestMetadata) ??
+    // Legacy directory fallback
+    let newestRunURL = runsDirectoryURL(for: definition).appendingPathComponent(newestRunID, isDirectory: true)
+    let newestMetadata = legacyMetadata(in: newestRunURL)
+    let backupLogTail = legacyTail(of: newestRunURL.appendingPathComponent("backup.log", isDirectory: false))
+
+    return legacyMetadataDate("finished_at", in: newestMetadata) ??
       latestCompletionDate(from: backupLogTail) ??
       runDate(from: newestRunID)
   }
 
   static func loadPageData(for definition: BackupSystemDefinition, limit: Int) -> BackupPageData {
     let runIDs = recentRunIDs(for: definition, limit: limit)
-    let newestRunURL = newestRunURL(for: definition, runIDs: runIDs)
-    let status = buildStatus(for: definition, newestRunURL: newestRunURL, runIDs: runIDs)
+    let status = buildStatus(for: definition, runIDs: runIDs)
     let restoreRuns = recentRestoreRuns(for: definition, limit: limit)
 
     return BackupPageData(status: status, restoreDates: runIDs, restoreRuns: restoreRuns)
   }
 
   static func loadRunDetails(for definition: BackupSystemDefinition, runID: String) -> BackupRunDetails {
-    guard runID.range(of: #"[\/]"#, options: .regularExpression) == nil else {
+    guard runID.range(of: #"[/]"#, options: .regularExpression) == nil else {
       return BackupRunDetails(log: "Invalid backup run id: \(runID)", components: [])
     }
 
+    if let manifest = loadManifest(for: definition, runID: runID) {
+      let log = [
+        manifest.backupLogTail,
+        manifest.stdoutLogTail,
+        manifest.stderrLogTail
+      ]
+      .filter { !$0.isEmpty }
+      .joined(separator: "\n\n")
+
+      let runIDs = recentRunIDs(for: definition, limit: 30)
+      let components = manifestComponentStatuses(
+        for: definition,
+        manifest: manifest,
+        runID: runID,
+        runIDs: runIDs
+      )
+
+      return BackupRunDetails(
+        log: log.isEmpty ? "No logs found for \(runID)." : log,
+        components: components
+      )
+    }
+
+    // Legacy directory fallback
     let runURL = runsDirectoryURL(for: definition).appendingPathComponent(runID, isDirectory: true)
     guard FileManager.default.fileExists(atPath: runURL.path) else {
       return BackupRunDetails(log: "No backup run found for \(runID).", components: [])
     }
 
     let runIDs = recentRunIDs(for: definition, limit: 30)
-    let log = combinedLog(in: runURL)
-    let components = buildComponentStatuses(
+    let log = legacyCombinedLog(in: runURL)
+    let components = legacyBuildComponentStatuses(
       for: definition,
       runURL: runURL,
       runID: runID,
@@ -61,28 +89,211 @@ enum BackupFilesystemLoader {
     )
   }
 
+  // MARK: - Run ID Discovery
+
   private static func recentRunIDs(for definition: BackupSystemDefinition, limit: Int) -> [String] {
+    let runsURL = runsDirectoryURL(for: definition)
     guard let entries = try? FileManager.default.contentsOfDirectory(
-      at: runsDirectoryURL(for: definition),
-      includingPropertiesForKeys: [.isDirectoryKey],
+      at: runsURL,
+      includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey],
       options: [.skipsHiddenFiles]
     ) else {
       return []
     }
 
-    return entries
-      .compactMap { url in
-        guard url.lastPathComponent.hasPrefix("20") else {
-          return nil
-        }
+    var runIDs = Set<String>()
 
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-        return values?.isDirectory == true ? url.lastPathComponent : nil
+    for url in entries {
+      let name = url.lastPathComponent
+      guard name.hasPrefix("20") else { continue }
+
+      // Manifest files: 2026-07-28-0330.manifest.json
+      if name.hasSuffix(".manifest.json") {
+        let runID = String(name.dropLast(".manifest.json".count))
+        runIDs.insert(runID)
+        continue
       }
+
+      // Zip files: 2026-07-28-0330.zip (covers zip-without-manifest edge case)
+      if name.hasSuffix(".zip") {
+        let runID = String(name.dropLast(".zip".count))
+        runIDs.insert(runID)
+        continue
+      }
+
+      // Legacy directories: 2026-07-28-0330/
+      let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+      if values?.isDirectory == true {
+        runIDs.insert(name)
+      }
+    }
+
+    return runIDs
       .sorted(by: >)
       .prefix(limit)
       .map { $0 }
   }
+
+  // MARK: - Manifest Loading
+
+  private static func loadManifest(for definition: BackupSystemDefinition, runID: String) -> BackupManifest? {
+    let manifestURL = runsDirectoryURL(for: definition)
+      .appendingPathComponent("\(runID).manifest.json", isDirectory: false)
+
+    guard let data = try? Data(contentsOf: manifestURL) else {
+      return nil
+    }
+
+    return try? manifestDecoder.decode(BackupManifest.self, from: data)
+  }
+
+  // MARK: - Status Building
+
+  private static func buildStatus(
+    for definition: BackupSystemDefinition,
+    runIDs: [String]
+  ) -> BackupSystemStatus {
+    let backupDirectoryURL = definition.backupDirectoryURL
+    let backupDirectoryExists = FileManager.default.fileExists(atPath: backupDirectoryURL.path)
+
+    guard let newestRunID = runIDs.first else {
+      return BackupSystemStatus(
+        systemID: definition.id,
+        backupDirectoryPath: backupDirectoryURL.path,
+        backupDirectoryExists: backupDirectoryExists,
+        requiredComponentsAreCurrent: false,
+        latestCompletionDate: nil,
+        components: definition.components.map { missingComponentStatus(for: $0, definition: definition) },
+        recentErrors: [],
+        backupLogTail: "",
+        stdoutLogTail: "",
+        stderrLogTail: ""
+      )
+    }
+
+    if let manifest = loadManifest(for: definition, runID: newestRunID) {
+      return buildStatusFromManifest(
+        for: definition,
+        manifest: manifest,
+        runID: newestRunID,
+        runIDs: runIDs,
+        backupDirectoryURL: backupDirectoryURL,
+        backupDirectoryExists: backupDirectoryExists
+      )
+    }
+
+    // Legacy directory fallback
+    let newestRunURL = runsDirectoryURL(for: definition).appendingPathComponent(newestRunID, isDirectory: true)
+    return legacyBuildStatus(
+      for: definition,
+      newestRunURL: newestRunURL,
+      newestRunID: newestRunID,
+      runIDs: runIDs,
+      backupDirectoryURL: backupDirectoryURL,
+      backupDirectoryExists: backupDirectoryExists
+    )
+  }
+
+  private static func buildStatusFromManifest(
+    for definition: BackupSystemDefinition,
+    manifest: BackupManifest,
+    runID: String,
+    runIDs: [String],
+    backupDirectoryURL: URL,
+    backupDirectoryExists: Bool
+  ) -> BackupSystemStatus {
+    let componentStatuses = manifestComponentStatuses(
+      for: definition,
+      manifest: manifest,
+      runID: runID,
+      runIDs: runIDs
+    )
+
+    let requiredCurrent = manifest.isSuccess &&
+      componentStatuses
+        .filter { $0.isRequired }
+        .allSatisfy { $0.isCurrentToday }
+
+    let logTail = manifest.backupLogTail
+    let stderrTail = manifest.stderrLogTail
+
+    return BackupSystemStatus(
+      systemID: definition.id,
+      backupDirectoryPath: backupDirectoryURL.path,
+      backupDirectoryExists: backupDirectoryExists,
+      requiredComponentsAreCurrent: requiredCurrent,
+      latestCompletionDate: timestampFormatter.date(from: manifest.finishedAt) ?? runDate(from: runID),
+      components: componentStatuses,
+      recentErrors: recentErrors(from: logTail + "\n" + stderrTail),
+      backupLogTail: logTail,
+      stdoutLogTail: manifest.stdoutLogTail,
+      stderrLogTail: stderrTail
+    )
+  }
+
+  private static func manifestComponentStatuses(
+    for definition: BackupSystemDefinition,
+    manifest: BackupManifest,
+    runID: String,
+    runIDs: [String]
+  ) -> [BackupComponentStatus] {
+    let today = dayFormatter.string(from: Date())
+    let manifestComponentsByID = Dictionary(uniqueKeysWithValues: manifest.components.map { ($0.id, $0) })
+
+    return definition.components.map { component in
+      let manifestComponent = manifestComponentsByID[component.id]
+      let exists = manifestComponent?.exists ?? false
+
+      let snapshotCount = runIDs.reduce(into: 0) { count, candidateRunID in
+        if let candidateManifest = loadManifest(for: definition, runID: candidateRunID) {
+          if candidateManifest.components.first(where: { $0.id == component.id })?.exists == true {
+            count += 1
+          }
+        } else {
+          // Legacy fallback: check directory
+          let candidateRunURL = runsDirectoryURL(for: definition)
+            .appendingPathComponent(candidateRunID, isDirectory: true)
+          let candidateComponentURL = componentURL(for: component, in: candidateRunURL)
+          if FileManager.default.fileExists(atPath: candidateComponentURL.path) {
+            count += 1
+          }
+        }
+      }
+
+      let zipPath = runsDirectoryURL(for: definition)
+        .appendingPathComponent("\(runID).zip", isDirectory: false)
+        .path
+
+      return BackupComponentStatus(
+        id: component.id,
+        title: component.title,
+        isRequired: component.isRequired,
+        latestDate: exists ? runID : nil,
+        snapshotCount: snapshotCount,
+        size: manifestComponent?.size ?? "Missing",
+        isCurrentToday: exists && manifest.isSuccess && runID.hasPrefix(today),
+        path: zipPath
+      )
+    }
+  }
+
+  private static func missingComponentStatus(
+    for component: BackupComponentDefinition,
+    definition: BackupSystemDefinition
+  ) -> BackupComponentStatus {
+    return BackupComponentStatus(
+      id: component.id,
+      title: component.title,
+      isRequired: component.isRequired,
+      latestDate: nil,
+      snapshotCount: 0,
+      size: "Missing",
+      isCurrentToday: false,
+      path: definition.backupDirectoryURL.path
+    )
+  }
+
+  // MARK: - Restore Runs
 
   private static func recentRestoreRuns(for definition: BackupSystemDefinition, limit: Int) -> [BackupRun] {
     guard let entries = try? FileManager.default.contentsOfDirectory(
@@ -118,45 +329,45 @@ enum BackupFilesystemLoader {
       .map { $0 }
   }
 
-  private static func buildStatus(
-    for definition: BackupSystemDefinition,
-    newestRunURL: URL?,
-    runIDs: [String]
-  ) -> BackupSystemStatus {
-    let backupDirectoryURL = definition.backupDirectoryURL
-    let backupDirectoryExists = FileManager.default.fileExists(atPath: backupDirectoryURL.path)
-    let newestRunID = newestRunURL?.lastPathComponent
-    let newestMetadata = newestRunURL.map { metadata(in: $0) } ?? [:]
-    let newestRunSucceeded = newestMetadata["status"] == "success" ||
-      (newestRunURL.map { tail(of: $0.appendingPathComponent("backup.log")).contains("completed") } ?? false)
+  // MARK: - Legacy Directory Support
 
-    let componentStatuses = newestRunURL.map {
-      buildComponentStatuses(
-        for: definition,
-        runURL: $0,
-        runID: newestRunID,
-        runSucceeded: newestRunSucceeded,
-        runIDs: runIDs
-      )
-    } ?? definition.components.map { missingComponentStatus(for: $0, definition: definition) }
+  private static func legacyBuildStatus(
+    for definition: BackupSystemDefinition,
+    newestRunURL: URL,
+    newestRunID: String,
+    runIDs: [String],
+    backupDirectoryURL: URL,
+    backupDirectoryExists: Bool
+  ) -> BackupSystemStatus {
+    let newestMetadata = legacyMetadata(in: newestRunURL)
+    let newestRunSucceeded = newestMetadata["status"] == "success" ||
+      legacyTail(of: newestRunURL.appendingPathComponent("backup.log")).contains("completed")
+
+    let componentStatuses = legacyBuildComponentStatuses(
+      for: definition,
+      runURL: newestRunURL,
+      runID: newestRunID,
+      runSucceeded: newestRunSucceeded,
+      runIDs: runIDs
+    )
 
     let requiredCurrent = newestRunSucceeded &&
       componentStatuses
         .filter { $0.isRequired }
         .allSatisfy { $0.isCurrentToday }
 
-    let backupLogTail = newestRunURL.map { tail(of: $0.appendingPathComponent("backup.log", isDirectory: false)) } ?? ""
-    let stdoutLogTail = newestRunURL.map { tail(of: $0.appendingPathComponent("stdout.log", isDirectory: false)) } ?? ""
-    let stderrLogTail = newestRunURL.map { tail(of: $0.appendingPathComponent("stderr.log", isDirectory: false)) } ?? ""
+    let backupLogTail = legacyTail(of: newestRunURL.appendingPathComponent("backup.log", isDirectory: false))
+    let stdoutLogTail = legacyTail(of: newestRunURL.appendingPathComponent("stdout.log", isDirectory: false))
+    let stderrLogTail = legacyTail(of: newestRunURL.appendingPathComponent("stderr.log", isDirectory: false))
 
     return BackupSystemStatus(
       systemID: definition.id,
       backupDirectoryPath: backupDirectoryURL.path,
       backupDirectoryExists: backupDirectoryExists,
       requiredComponentsAreCurrent: requiredCurrent,
-      latestCompletionDate: metadataDate("finished_at", in: newestMetadata) ??
+      latestCompletionDate: legacyMetadataDate("finished_at", in: newestMetadata) ??
         latestCompletionDate(from: backupLogTail) ??
-        newestRunID.flatMap(runDate),
+        runDate(from: newestRunID),
       components: componentStatuses,
       recentErrors: recentErrors(from: backupLogTail + "\n" + stderrLogTail),
       backupLogTail: backupLogTail,
@@ -165,16 +376,16 @@ enum BackupFilesystemLoader {
     )
   }
 
-  private static func buildComponentStatuses(
+  private static func legacyBuildComponentStatuses(
     for definition: BackupSystemDefinition,
     runURL: URL,
-    runID: String?,
+    runID: String,
     runSucceeded: Bool? = nil,
     runIDs: [String]
   ) -> [BackupComponentStatus] {
-    let metadata = self.metadata(in: runURL)
+    let metadata = legacyMetadata(in: runURL)
     let succeeded = runSucceeded ??
-      (metadata["status"] == "success" || tail(of: runURL.appendingPathComponent("backup.log")).contains("completed"))
+      (metadata["status"] == "success" || legacyTail(of: runURL.appendingPathComponent("backup.log")).contains("completed"))
     let today = dayFormatter.string(from: Date())
 
     return definition.components.map { component in
@@ -195,60 +406,24 @@ enum BackupFilesystemLoader {
         isRequired: component.isRequired,
         latestDate: selectedComponentExists ? runID : nil,
         snapshotCount: snapshotCount,
-        size: diskUsage(for: selectedComponentURL),
-        isCurrentToday: selectedComponentExists && succeeded && (runID?.hasPrefix(today) == true),
+        size: legacyDiskUsage(for: selectedComponentURL),
+        isCurrentToday: selectedComponentExists && succeeded && runID.hasPrefix(today),
         path: selectedComponentURL.path
       )
     }
   }
 
-  private static func missingComponentStatus(
-    for component: BackupComponentDefinition,
-    definition: BackupSystemDefinition
-  ) -> BackupComponentStatus {
-    return BackupComponentStatus(
-      id: component.id,
-      title: component.title,
-      isRequired: component.isRequired,
-      latestDate: nil,
-      snapshotCount: 0,
-      size: "Missing",
-      isCurrentToday: false,
-      path: definition.backupDirectoryURL.path
-    )
-  }
-
-  private static func newestRunURL(for definition: BackupSystemDefinition, runIDs: [String]) -> URL? {
-    guard let runID = runIDs.first else {
-      return nil
-    }
-
-    return runsDirectoryURL(for: definition).appendingPathComponent(runID, isDirectory: true)
-  }
-
-  private static func runsDirectoryURL(for definition: BackupSystemDefinition) -> URL {
-    definition.backupDirectoryURL.appendingPathComponent("runs", isDirectory: true)
-  }
-
-  private static func componentURL(for component: BackupComponentDefinition, in runURL: URL) -> URL {
-    component.relativePath
-      .split(separator: "/")
-      .reduce(runURL) { url, component in
-        url.appendingPathComponent(String(component), isDirectory: false)
-      }
-  }
-
-  private static func combinedLog(in runURL: URL) -> String {
+  private static func legacyCombinedLog(in runURL: URL) -> String {
     [
-      tail(of: runURL.appendingPathComponent("backup.log", isDirectory: false)),
-      tail(of: runURL.appendingPathComponent("stdout.log", isDirectory: false)),
-      tail(of: runURL.appendingPathComponent("stderr.log", isDirectory: false))
+      legacyTail(of: runURL.appendingPathComponent("backup.log", isDirectory: false)),
+      legacyTail(of: runURL.appendingPathComponent("stdout.log", isDirectory: false)),
+      legacyTail(of: runURL.appendingPathComponent("stderr.log", isDirectory: false))
     ]
     .filter { !$0.isEmpty }
     .joined(separator: "\n\n")
   }
 
-  private static func metadata(in runURL: URL) -> [String: String] {
+  private static func legacyMetadata(in runURL: URL) -> [String: String] {
     guard let text = try? String(contentsOf: runURL.appendingPathComponent("metadata.env"), encoding: .utf8) else {
       return [:]
     }
@@ -265,7 +440,7 @@ enum BackupFilesystemLoader {
       }
   }
 
-  private static func metadataDate(_ key: String, in metadata: [String: String]) -> Date? {
+  private static func legacyMetadataDate(_ key: String, in metadata: [String: String]) -> Date? {
     guard let value = metadata[key] else {
       return nil
     }
@@ -273,7 +448,7 @@ enum BackupFilesystemLoader {
     return timestampFormatter.date(from: value)
   }
 
-  private static func diskUsage(for url: URL) -> String {
+  private static func legacyDiskUsage(for url: URL) -> String {
     guard FileManager.default.fileExists(atPath: url.path) else {
       return "Missing"
     }
@@ -297,7 +472,7 @@ enum BackupFilesystemLoader {
     }
   }
 
-  private static func tail(of url: URL, maxBytes: UInt64 = 60_000) -> String {
+  private static func legacyTail(of url: URL, maxBytes: UInt64 = 60_000) -> String {
     guard FileManager.default.fileExists(atPath: url.path) else {
       return ""
     }
@@ -319,6 +494,20 @@ enum BackupFilesystemLoader {
     } catch {
       return ""
     }
+  }
+
+  // MARK: - Shared Helpers
+
+  private static func runsDirectoryURL(for definition: BackupSystemDefinition) -> URL {
+    definition.backupDirectoryURL.appendingPathComponent("runs", isDirectory: true)
+  }
+
+  private static func componentURL(for component: BackupComponentDefinition, in runURL: URL) -> URL {
+    component.relativePath
+      .split(separator: "/")
+      .reduce(runURL) { url, component in
+        url.appendingPathComponent(String(component), isDirectory: false)
+      }
   }
 
   private static func latestCompletionDate(from log: String) -> Date? {
@@ -391,4 +580,9 @@ enum BackupFilesystemLoader {
   }()
 
   private static let restoreRunDecoder = JSONDecoder()
+
+  private static let manifestDecoder: JSONDecoder = {
+    let decoder = JSONDecoder()
+    return decoder
+  }()
 }
