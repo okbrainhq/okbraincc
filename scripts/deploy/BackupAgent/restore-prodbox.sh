@@ -11,13 +11,22 @@ REMOTE_SANDBOX_SKILLS="/home/brain-sandbox/skills/"
 REMOTE_SANDBOX_IMAGES="/home/brain-sandbox/upload_images/"
 APP_NAME="brain"
 APP_STOPPED="0"
+EXTRACT_DIR=""
 
 RUN_ID=""
 FILTER=""
 ASSUME_YES="0"
 
+cleanup_extract() {
+  if [ -n "$EXTRACT_DIR" ] && [ -d "$EXTRACT_DIR" ]; then
+    rm -rf "$EXTRACT_DIR"
+  fi
+}
+
 restart_app() {
   local exit_status=$?
+
+  cleanup_extract
 
   if [ "$APP_STOPPED" != "1" ]; then
     return "$exit_status"
@@ -61,20 +70,34 @@ resolve_run_dir() {
       exit 1
     fi
 
-    RUN_ID="$(find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; | sort -r | sed -n '1p')"
+    # Prefer zip files, fall back to directories
+    RUN_ID="$(
+      {
+        find "$RUNS_DIR" -maxdepth 1 -name "20*.zip" -exec basename {} .zip \; 2>/dev/null
+        find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; 2>/dev/null
+      } | sort -ru | sed -n '1p'
+    )"
     if [ -z "$RUN_ID" ]; then
       echo "Error: No backup runs found. Specify a run id."
       exit 1
     fi
   fi
 
-  RUN_DIR="$RUNS_DIR/$RUN_ID"
-
-  if [ ! -d "$RUN_DIR" ]; then
-    echo "Error: Backup run not found: $RUN_DIR"
+  if [ -f "$RUNS_DIR/$RUN_ID.zip" ]; then
+    EXTRACT_DIR="$(mktemp -d)"
+    echo "Extracting $RUN_ID.zip..."
+    unzip -q "$RUNS_DIR/$RUN_ID.zip" -d "$EXTRACT_DIR"
+    RUN_DIR="$EXTRACT_DIR/$RUN_ID"
+  elif [ -d "$RUNS_DIR/$RUN_ID" ]; then
+    RUN_DIR="$RUNS_DIR/$RUN_ID"
+  else
+    echo "Error: Backup run not found: $RUN_ID"
     echo ""
     echo "Available backup runs:"
-    find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; 2>/dev/null | sort -r | head -20 || true
+    {
+      find "$RUNS_DIR" -maxdepth 1 -name "20*.zip" -exec basename {} .zip \; 2>/dev/null
+      find "$RUNS_DIR" -maxdepth 1 -mindepth 1 -type d -name "20*" -exec basename {} \; 2>/dev/null
+    } | sort -ru | head -20 || true
     exit 1
   fi
 
