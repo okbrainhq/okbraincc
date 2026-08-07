@@ -157,7 +157,7 @@ if selected "--skills-only"; then
 fi
 
 if selected "--data-only"; then
-  restore_directory "brain-data" "$BRAIN_DATA_DIR" "$REMOTE_BRAIN_DATA"
+  restore_directory "brain-data" "$BRAIN_DATA_DIR" "$REMOTE_BRAIN_DATA" "/var/www/brain-data/"
 fi
 
 echo ""
