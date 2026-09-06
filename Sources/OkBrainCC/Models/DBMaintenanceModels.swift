@@ -47,6 +47,7 @@ enum DBMaintenanceRunStatus: String, Codable, Hashable {
   case warning
   case incomplete
   case partial
+  case deferred
 
   var title: String {
     switch self {
@@ -64,6 +65,8 @@ enum DBMaintenanceRunStatus: String, Codable, Hashable {
       "Sweep in progress"
     case .partial:
       "Partial / needs attention"
+    case .deferred:
+      "Deferred / retry next cycle"
     }
   }
 }

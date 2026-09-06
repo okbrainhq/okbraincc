@@ -55,8 +55,7 @@ final class DBMaintenanceStore: ObservableObject {
     }
     schedule = Self.loadSchedule(defaults: defaults)
     remoteHost = defaults.string(forKey: Self.remoteHostKey) ?? "arunoda@prodbox.local"
-    safety = defaults.data(forKey: Self.safetyKey)
-      .flatMap { try? JSONDecoder().decode(DBMaintenanceSafetySettings.self, from: $0) } ?? DBMaintenanceSafetySettings()
+    safety = Self.loadSafety(defaults: defaults)
     cursors = defaults.dictionary(forKey: Self.cursorsKey) as? [String: String] ?? [:]
     lastAutomaticRunDate = defaults.object(forKey: Self.lastAutomaticAttemptDateKey) as? Date
     runs = Self.loadPersistedRuns(at: runsDirectoryURL)
@@ -111,21 +110,28 @@ final class DBMaintenanceStore: ObservableObject {
     var settings = safety
     if previewOnly { settings.deleteImages = false }
     var result = DBMaintenanceConfiguration(remoteHost: remoteHost, retentionDays: schedule.retentionDays, safety: settings)
+    result.imagePolicyVersion = 2
+    result.scheduleIntervalMinutes = schedule.intervalMinutes
+    result.scheduleEnabled = schedule.isEnabled
     result.imageAfterID = cursors[result.sweepKey] ?? ""
     return result
   }
 
   private func startComposite(target: DBMaintenanceRunType, trigger: DBMaintenanceTrigger) -> UUID? {
     guard activeRunID == nil else { return activeRunID }
-    let frozen = configuration()
+    let frozen = configuration(previewOnly: target == .vacuum)
     pendingComposite = Composite(target: target, trigger: trigger, configuration: frozen)
     return startRun(type: .dryRun, trigger: trigger, configuration: frozen, validationType: target)
   }
 
   private func startRun(type: DBMaintenanceRunType, trigger: DBMaintenanceTrigger,
                         configuration: DBMaintenanceConfiguration, validationType: DBMaintenanceRunType? = nil) -> UUID {
-    let header = "Starting \(type.title). Frozen host=\(configuration.remoteHost), retention=\(configuration.retentionDays) days.\n" +
-      "Scope: tool history only; conversations/messages/jobs/repository files retained. Images: \(configuration.safety.deleteImages ? "offline deletion opted in (Dry Run still read-only)" : "preview only").\n"
+    let mode = type == .vacuum ? "manual offline Vacuum; image preview only" :
+      "online; Brain not stopped (no service checks/stop/start)"
+    let header = "Starting \(type.title). Frozen host=\(configuration.remoteHost), cutoff age=\(configuration.retentionDays) days.\n" +
+      "Schedule: \(configuration.scheduleEnabled == true ? "enabled" : "off"), every \(configuration.scheduleIntervalMinutes ?? schedule.intervalMinutes) minutes; trigger=\(trigger.rawValue). Mode: \(mode).\n" +
+      "Scope: tool history only; conversations/messages/jobs/repository files retained. Images: \(configuration.safety.deleteImages ? "automatic online cleanup (Dry Run still read-only)" : "preview only").\n" +
+      "Image eligibility: upload AND owning chat/recent activity older than \(configuration.retentionDays) days, inactive jobs; backend enforces user/unknown/shared/retained-reference protections.\n"
     let run = DBMaintenanceRun(id: UUID(), runType: type, trigger: trigger, startedAt: Date(), finishedAt: nil,
                                status: .running, exitCode: nil, detail: "\(type.title) maintenance", log: header,
                                configuration: configuration)
@@ -194,13 +200,14 @@ final class DBMaintenanceStore: ObservableObject {
       (report == nil ? "Missing terminal report: outcome and service restoration UNCONFIRMED; no success claimed.\n" : "") +
       (loggingFailed ? "Audit persistence failed during execution; cancellation requested.\n" : "")
     let persisted = finish(runID: runID, status: status, exitCode: result.exitCode, message: message)
-    // A Dry Run in a pair must NEVER advance the Apply cursor, nor consume its approved snapshot.
+    // A Dry Run in a pair must NEVER advance the Apply cursor, nor consume its frozen snapshot.
     if type == .dryRun, let next, !stopped, !loggingFailed, persisted,
        result.exitCode == 0, report?.permitsApply == true {
       _ = startRun(type: next.target, trigger: next.trigger, configuration: next.configuration)
     } else if next == nil, persisted, let images = report?.images, images.cursorCanAdvance,
-              images.mode == (configuration.safety.deleteImages ? "apply" : "preview") {
-      // Persist safe progress even after per-file errors / later-batch failure. Next sweep retries skipped/error rows.
+              images.mode == configuration.imageMode,
+              images.mode != "online-apply" || result.exitCode == 0 {
+      // Nonzero online exits NEVER advance progress, even if a report claims otherwise. Preview progress stays separate.
       cursors[configuration.sweepKey] = images.nextAfterID ?? ""
       defaults.set(cursors, forKey: Self.cursorsKey)
     }
@@ -210,7 +217,9 @@ final class DBMaintenanceStore: ObservableObject {
     guard let runID = activeRunID else { return }
     stoppedRunIDs.insert(runID)
     pendingComposite = nil
-    append("Stop requested; waiting for remote restoration. Do not force-quit CC.\n", to: runID)
+    let offline = runs.first { $0.id == runID }?.runType == .vacuum
+    append(offline ? "Stop requested; waiting for remote child termination and Vacuum service restoration. Do not force-quit CC.\n" :
+      "Stop requested; waiting for remote child termination; online, Brain not stopped. Do not force-quit CC.\n", to: runID)
     if let process = activeProcess, process.isRunning { process.terminate() }
   }
 
@@ -234,9 +243,13 @@ final class DBMaintenanceStore: ObservableObject {
     schedule = next
   }
 
-  /// Returns a visible validation error; never silently enables destructive settings.
+  /// Explicit post-migration image disabling is preserved; blank roots use the source default.
   func updateConfiguration(host: String, safety: DBMaintenanceSafetySettings) -> String? {
     let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
+    var safety = safety
+    if safety.uploadsDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      safety.uploadsDirectory = DBMaintenanceSafetySettings.defaultUploadsDirectory
+    }
     let config = DBMaintenanceConfiguration(remoteHost: host, retentionDays: schedule.retentionDays, safety: safety)
     if let error = config.validationError(for: .apply) { return error }
     guard let data = try? JSONEncoder().encode(safety) else { return "Could not encode maintenance settings." }
@@ -350,11 +363,32 @@ final class DBMaintenanceStore: ObservableObject {
       retentionDays: min(max(defaults.object(forKey: retentionDaysKey) as? Int ?? 10, 1), 365))
   }
 
+  private static func loadSafety(defaults: UserDefaults) -> DBMaintenanceSafetySettings {
+    // A separate versioned settings key is the migration marker. Never migrate audit configurations.
+    if let data = defaults.data(forKey: safetyKey),
+       var saved = try? JSONDecoder().decode(DBMaintenanceSafetySettings.self, from: data) {
+      if saved.uploadsDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        saved.uploadsDirectory = DBMaintenanceSafetySettings.defaultUploadsDirectory
+        if let normalized = try? JSONEncoder().encode(saved) { defaults.set(normalized, forKey: safetyKey) }
+      }
+      return saved // Includes explicit v2 deleteImages=false; do not re-enable on every launch.
+    }
+    var migrated = defaults.data(forKey: legacySafetyKey)
+      .flatMap { try? JSONDecoder().decode(DBMaintenanceSafetySettings.self, from: $0) } ?? DBMaintenanceSafetySettings()
+    migrated.deleteImages = true // User-authorized replacement of the v1 preview-only policy.
+    if migrated.uploadsDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      migrated.uploadsDirectory = DBMaintenanceSafetySettings.defaultUploadsDirectory
+    }
+    if let data = try? JSONEncoder().encode(migrated) { defaults.set(data, forKey: safetyKey) }
+    return migrated
+  }
+
   private static let scheduleEnabledKey = "dbMaintenance.scheduleEnabled"
   private static let scheduleIntervalMinutesKey = "dbMaintenance.scheduleIntervalMinutes"
   private static let retentionDaysKey = "dbMaintenance.retentionDays"
   private static let remoteHostKey = "dbMaintenance.remoteHost"
   private static let lastAutomaticAttemptDateKey = "dbMaintenance.lastAutomaticAttemptDate"
-  private static let safetyKey = "dbMaintenance.safety.v1"
-  private static let cursorsKey = "dbMaintenance.imageSweepCursors.v1"
+  private static let legacySafetyKey = "dbMaintenance.safety.v1"
+  private static let safetyKey = "dbMaintenance.safety.v2"
+  private static let cursorsKey = "dbMaintenance.imageSweepCursors.v2"
 }

@@ -6,7 +6,6 @@ struct DBMaintenanceView: View {
   @State private var isShowingSettings = false
   @State private var isConfirmingVacuum = false
   @State private var vacuumConfirmText = ""
-  @State private var isConfirmingImageApply = false
 
   private var isRunning: Bool {
     store.activeRunID != nil
@@ -62,15 +61,7 @@ struct DBMaintenanceView: View {
         vacuumConfirmText = ""
       }
     } message: {
-      Text("Vacuum is manual only and requires a planned downtime window. Configured writers (\(store.safety.writerServices)) must cover ALL app/worker/filesystem writers. Only previously active services will be restored. Image policy: \(store.safety.deleteImages ? "delete eligible agent images" : "preview only").\n\nType CONFIRM to proceed.")
-    }
-    .alert("Offline Apply + Agent Images", isPresented: $isConfirmingImageApply) {
-      Button("Start Offline Apply", role: .destructive) {
-        selectedRunID = store.runApplyWithDryRun()
-      }
-      Button("Cancel", role: .cancel) {}
-    } message: {
-      Text("After a successful Dry Run, configured writers (\(store.safety.writerServices)) will be stopped. Only eligible aged agent images may be deleted. Your saved all-writers and external-reference audit affirmations must still be true. Previously inactive services will NOT be started.")
+      Text("Vacuum is manual only and requires a planned downtime window. Configured writers (\(store.safety.writerServices)) must cover ALL app/worker/filesystem writers. Only previously active services will be restored. Images are preview-only during Vacuum; normal Apply handles online image cleanup.\n\nType CONFIRM to proceed.")
     }
   }
 
@@ -107,13 +98,9 @@ struct DBMaintenanceView: View {
         .accessibilityLabel("Dry Run")
 
         Button {
-          if store.safety.deleteImages {
-            isConfirmingImageApply = true
-          } else {
-            selectedRunID = store.runApplyWithDryRun()
-          }
+          selectedRunID = store.runApplyWithDryRun()
         } label: {
-          Label(store.safety.deleteImages ? "Apply + Images (offline)" : "Apply History", systemImage: "checkmark.circle")
+          Label(store.safety.deleteImages ? "Apply + Images (online)" : "Apply History", systemImage: "checkmark.circle")
         }
         .disabled(isRunning)
         .accessibilityLabel("Apply")
@@ -162,10 +149,10 @@ struct DBMaintenanceView: View {
         .lineLimit(1)
         .truncationMode(.middle)
       Text(store.safety.deleteImages
-           ? "Image deletion OPTED IN: scheduled Apply may stop all configured writers. No automatic Vacuum."
-           : "Images: preview only. Scheduled Apply cleans tool history without downtime; image deletion requires explicit opt-in in Settings.")
+           ? "Automatic online image cleanup · \(store.schedule.intervalLabel) when enabled · older than \(store.schedule.retentionDays) days. Brain is not stopped. No automatic Vacuum."
+           : "Image cleanup disabled in Settings; previews remain available. Apply cleans history online without stopping Brain. No automatic Vacuum.")
         .font(.callout)
-        .foregroundStyle(store.safety.deleteImages ? .orange : .secondary)
+        .foregroundStyle(.secondary)
       Text(store.imageProgressLabel)
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -346,7 +333,7 @@ private struct DBMaintenanceRunRow: View {
       return "xmark.circle.fill"
     case .stopped:
       return "stop.circle.fill"
-    case .warning, .incomplete, .partial:
+    case .warning, .incomplete, .partial, .deferred:
       return "exclamationmark.triangle.fill"
     }
   }
@@ -359,7 +346,7 @@ private struct DBMaintenanceRunRow: View {
       .green
     case .failed:
       .red
-    case .stopped, .warning, .incomplete, .partial:
+    case .stopped, .warning, .incomplete, .partial, .deferred:
       .orange
     }
   }
@@ -380,7 +367,6 @@ private struct DBMaintenanceSettingsView: View {
   @Environment(\.dismiss) private var dismiss
   @State private var editingRemoteHost: String = ""
   @State private var draft = DBMaintenanceSafetySettings()
-  @State private var enablePhrase = ""
   @State private var validationError: String?
 
   private var schedule: DBMaintenanceScheduleSettings {
@@ -414,7 +400,7 @@ private struct DBMaintenanceSettingsView: View {
               .foregroundStyle(.secondary)
             TextField("user@host.local", text: Binding(
               get: { editingRemoteHost },
-              set: { editingRemoteHost = $0; draft.revokeConsent(); enablePhrase = "" }
+              set: { editingRemoteHost = $0; draft.revokeVacuumConsent() }
             ))
               .textFieldStyle(.roundedBorder)
               .font(.callout.monospaced())
@@ -464,13 +450,14 @@ private struct DBMaintenanceSettingsView: View {
             ),
             in: 1...365
           ) {
-            Text("Keep execution history and CC audit logs for \(schedule.retentionDays) days")
+            Text("History / audit retention and minimum image age: \(schedule.retentionDays) days")
           }
         }
         .padding(16)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
         imageSafetySettings
+        vacuumSafetySettings
         if let validationError {
           Text(validationError).foregroundStyle(.red)
         }
@@ -508,41 +495,25 @@ private struct DBMaintenanceSettingsView: View {
 
   private var imageSafetySettings: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("Agent images & offline safety").font(.headline)
-      Text("Release the counterpart Brain code AND provenance schema first. CC never runs migrations. Images without known agent provenance, user uploads, pinned images and retained DB references remain protected. Repository files and conversations/messages are never cleanup targets.")
+      Text("Automatic online agent-image cleanup").font(.headline)
+      Text("The existing scheduled Dry Run → Apply cleans tool history and eligible agent images while Brain stays online. Default: every 24 hours, older than 10 days. No extra permission, confirmation, service check or downtime is needed for normal Apply.")
         .font(.callout).foregroundStyle(.secondary)
-      TextField("Existing remote app database", text: scopeBinding(\.database))
+      TextField("Existing remote app database", text: vacuumScopeBinding(\.database))
         .textFieldStyle(.roundedBorder)
-      TextField("Verified absolute uploads directory (empty = images unavailable)", text: scopeBinding(\.uploadsDirectory))
+      TextField("Canonical uploads directory (blank uses source default)", text: $draft.uploadsDirectory)
         .textFieldStyle(.roundedBorder)
         .accessibilityIdentifier("maintenance.uploadsDirectory")
-      Text("Source-indicated path: /var/www/brain-data/uploads. Verify the actual canonical storage_root on the target; do not assume it. With a directory configured, every normal Apply still previews images unless explicitly opted in below.")
+      Text("Default: /var/www/brain-data/uploads. Existing custom paths are preserved. Unavailable roots fail safely; the backend must match each image's recorded storage_root and hash before deletion. Paths are passed as argv, never shell commands.")
         .font(.caption).foregroundStyle(.secondary)
-      TextField("All writer services (space-separated)", text: scopeBinding(\.writerServices))
-        .textFieldStyle(.roundedBorder)
-      Text("Documented default: brain (not brain.service, to match existing sudoers). Extra services require explicit sudo permissions. Source defines no separate worker service; live overrides, timers, external workers and filesystem writers must be audited by the operator.")
-        .font(.caption).foregroundStyle(.secondary)
-      Toggle("I authorize downtime on manual AND scheduled offline Apply; Vacuum remains manual.",
-             isOn: consentBinding(\.downtimeAcknowledged))
-      Toggle("ALL app/worker/filesystem writers are controlled by exactly these services; no uncontrolled writer can restart or write during this window.",
-             isOn: consentBinding(\.writersAcknowledged))
-      Toggle("I have audited external references and pinned images they need. Database references alone cannot establish this.",
-             isOn: consentBinding(\.externalReferencesAcknowledged))
-        .accessibilityIdentifier("maintenance.externalReferencesAcknowledged")
-      if !draft.deleteImages {
-        TextField("Type DELETE AGENT IMAGES to enable removal", text: $enablePhrase)
-          .textFieldStyle(.roundedBorder)
-      }
-      Toggle("Opt in to eligible agent-image deletion during manual AND scheduled Apply",
-             isOn: $draft.deleteImages)
-        .disabled(!draft.deleteImages && (enablePhrase != "DELETE AGENT IMAGES" || draft.uploadsDirectory.isEmpty ||
-          !draft.downtimeAcknowledged || !draft.writersAcknowledged || !draft.externalReferencesAcknowledged))
+      Toggle("Clean eligible agent images during scheduled and manual Apply (online)", isOn: $draft.deleteImages)
         .accessibilityIdentifier("maintenance.deleteImages")
-      Text("Unchecked by default, including existing installations. Dry Run never deletes or stops services. Apply rechecks image schema/scope, then stops and verifies all configured writers before image deletion. Only previously active services are restored. Changing host, paths or services revokes these permissions.")
+      Text("Enabled for new installs and migrated legacy preview-only settings. You can disable image deletion here; later launches preserve that choice. Dry Run always has zero actual deletions. Apply requires the released Brain --online CLI and provenance schema; incompatible backends are blocked, never run offline instead.")
         .font(.caption).foregroundStyle(.secondary)
-      Text("Bounded sweeps: at most 3 × 100 rows per phase, plus a separate 100-row read-only pre-Apply probe. Preview and deletion have separate persisted cursors, keyed by host/database/uploads/retention/policy. Incomplete sweeps resume on later runs; protected/error rows are retried next sweep. Dry Run before history pruning is only a preview of that moment—not a prediction of post-prune eligibility.")
+      Text("Both the upload and its owning chat / recent activity must be older than \(schedule.retentionDays) days, with no active jobs. The backend protects user uploads, unknown/legacy, pinned, shared and retained-reference images. Conversations, messages and repository files are never deletion targets.")
         .font(.caption).foregroundStyle(.secondary)
-      Text("Schedule changes above save immediately. Scope/consent changes save with Save & Done. Active Dry Run → Apply pairs keep their frozen settings.")
+      Text("Bounded sweeps: at most 3 × 100 rows per phase, plus a separate 100-row read-only pre-Apply probe. Preview and online deletion have separate persisted cursors. Incomplete sweeps resume on later runs; a busy or changed online snapshot defers unprocessed work to the next cycle. Dry Run is a preview, not a frozen deletion manifest.")
+        .font(.caption).foregroundStyle(.secondary)
+      Text("Schedule changes above save immediately. Other settings save with Save & Done. Active Dry Run → Apply pairs keep their frozen settings.")
         .font(.caption).foregroundStyle(.secondary)
     }
     .toggleStyle(.checkbox)
@@ -550,18 +521,27 @@ private struct DBMaintenanceSettingsView: View {
     .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
   }
 
-  private func scopeBinding(_ key: WritableKeyPath<DBMaintenanceSafetySettings, String>) -> Binding<String> {
-    Binding(get: { draft[keyPath: key] }, set: {
-      draft[keyPath: key] = $0
-      draft.revokeConsent()
-      enablePhrase = ""
-    })
+  private var vacuumSafetySettings: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Manual Vacuum only — offline safety").font(.headline)
+      Text("Vacuum is separate, never scheduled or run on startup. It requires manual confirmation and stops configured writers for compaction, then restores only previously active services. Images are preview-only during Vacuum. These settings do not affect normal online Apply.")
+        .font(.callout).foregroundStyle(.secondary)
+      TextField("All writer services for Vacuum (space-separated)", text: vacuumScopeBinding(\.writerServices))
+        .textFieldStyle(.roundedBorder)
+      Text("Default: brain (matching existing sudoers). Include all app/worker/filesystem writers; extra services require reviewed stop/start permissions. Changing host, database or services clears only Vacuum acknowledgements, not online image cleanup.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("I authorize downtime for manual Vacuum.", isOn: $draft.downtimeAcknowledged)
+      Toggle("ALL app/worker/filesystem writers are controlled by these services; no uncontrolled writer can restart or write during Vacuum.", isOn: $draft.writersAcknowledged)
+    }
+    .toggleStyle(.checkbox)
+    .padding(16)
+    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
   }
 
-  private func consentBinding(_ key: WritableKeyPath<DBMaintenanceSafetySettings, Bool>) -> Binding<Bool> {
+  private func vacuumScopeBinding(_ key: WritableKeyPath<DBMaintenanceSafetySettings, String>) -> Binding<String> {
     Binding(get: { draft[keyPath: key] }, set: {
       draft[keyPath: key] = $0
-      if !$0 { draft.deleteImages = false; enablePhrase = "" }
+      draft.revokeVacuumConsent()
     })
   }
 
@@ -598,7 +578,7 @@ private struct DBMaintenanceReportView: View {
         Text("Candidates: \(images.candidates) files / \(images.candidateBytes) bytes")
         Text("Confirmed reported deletions: \(images.deleted) files / \(images.deletedBytes) bytes; missing finalized: \(images.missingFinalized); per-file errors: \(images.errors)")
         if images.unconfirmedBatch == true {
-          Text("Interrupted/invalid Apply batch: additional deletions are UNKNOWN. Totals above cover only confirmed batches.")
+          Text("Unconfirmed image changes: interrupted/invalid batch or unlink without a confirmed tombstone commit. Totals above include confirmed commits only; retry keeps unfinalized provenance.")
             .foregroundStyle(.red)
         }
         Text(images.sweepComplete ? "End of this traversal reached; protected/error rows are rechecked next sweep." :
@@ -615,6 +595,10 @@ private struct DBMaintenanceReportView: View {
       if report.restorationFailed {
         Text("SERVICE RESTORATION FAILED — operator intervention required.")
           .foregroundStyle(.red).bold()
+      }
+      if report.outcome == "deferred" {
+        Text("Online image cleanup deferred. No confirmed image deletions or unconfirmed unlinks were reported. The cursor stays unchanged; retry next scheduled cycle. History may have completed.")
+          .foregroundStyle(.orange)
       }
       if report.partial { Text("Partial result: some work may have committed.").foregroundStyle(.orange) }
       if let error = report.error { Text(error).font(.caption.monospaced()).foregroundStyle(.red) }

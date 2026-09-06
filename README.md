@@ -105,16 +105,15 @@ After changing model rows, restart the local server so `/v1/models` and API clie
 
 ## DB Maintenance
 
-The existing Dry Run → Apply timer now cleans **tool execution history only**, with agent-image previews and persistent candidate/removal/protection reports. Existing schedules/settings stay intact; image deletion is **off by default** and requires explicit uploads scope, all-writers/downtime/external-reference acknowledgements, and deliberate opt-in. Vacuum stays manual.
+The existing Dry Run → Apply timer cleans **tool execution history and eligible agent images online**, without service checks or stopping Brain. Source defaults are every **24 hours**, older than **10 days**; custom schedules remain intact. New installs and legacy preview-only settings enable images automatically, with no extra prompt. Blank uploads paths use `/var/www/brain-data/uploads`; custom roots and later explicit disabling are preserved. **Vacuum alone remains manual/offline.**
 
-See [DB Maintenance release, safety and logging guide](docs/db-maintenance.md) before enabling image deletion. **Release the counterpart Brain code and provenance schema first.** CC does not migrate the remote database or guess the deployed uploads root.
+See [DB Maintenance policy, safety and logging guide](docs/db-maintenance.md). **The counterpart Brain image CLI must support `--apply --online` and the provenance schema.** Online history Apply uses `--no-checkpoint`; online images require WAL and Python close-checkpoint control. Incompatible backends fail closed, never fall back offline. Persistent reports distinguish candidates, confirmed removals, unconfirmed changes and protection reasons. Every nonzero online exit keeps the saved sweep cursor unchanged for retry; conversations/messages, user uploads and repository files stay protected.
 
 Safe focused validation (no GUI launch, real SSH or CC process kills):
 
 ```bash
 bash scripts/test-db-maintenance.sh
 swift build --disable-sandbox --cache-path .build/swiftpm-cache
-./scripts/build.sh --dev
 ```
 
 The full `scripts/test.sh` includes mock production launches and process-name kills; do not use it for fixture-only maintenance work.

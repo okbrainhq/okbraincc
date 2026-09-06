@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """CC-only transport/orchestration. Counterpart CLIs own all data selection/deletion.
-No migrations, directory guessing, shell interpolation, or legacy fallback.
+No remote migrations, image selection, shell interpolation, or legacy/offline image fallback.
 """
 import base64
 import fcntl
@@ -19,12 +19,23 @@ import time
 HISTORY_SCRIPT = "/var/www/brain/scripts/deploy/cleanup-old-execution-history.sh"
 IMAGE_SCRIPT = "/var/www/brain/scripts/deploy/cleanup-agent-images.py"
 SYSTEMCTL = "/bin/systemctl"
+DEFAULT_UPLOADS = "/var/www/brain-data/uploads"
 BATCH_SIZE = 100
 MAX_BATCHES = 3
 RESULT_PREFIX = "CC_RESULT "
+ONLINE_TRANSIENT_REASONS = {"online-db-busy", "online-snapshot-changed", "online-lock-budget-exceeded", "online-run-budget-exceeded"}
+ONLINE_CANCEL_REASONS = {"cancelled:SIGTERM", "cancelled:SIGINT"}
+ONLINE_BLOCKED_REASONS = ONLINE_TRANSIENT_REASONS | ONLINE_CANCEL_REASONS | {"online-requires-wal", "online-no-close-checkpoint-control"}
 
 
 class Blocked(Exception):
+    def __init__(self, reason, code=2):
+        super().__init__(reason)
+        self.code = code
+
+
+class Deferred(Blocked):
+    """Verified online contention/budget report with no confirmed or unconfirmed image deletion."""
     pass
 
 
@@ -64,27 +75,27 @@ def validate(config, action):
         raise Blocked("invalid_retention_days")
     if config["afterID"] and not token(config["afterID"]):
         raise Blocked("invalid_sweep_cursor")
-    services = config["services"]
-    if (not isinstance(services, list) or len(services) > 20 or len(set(services)) != len(services)
-            or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}", s) for s in services)):
-        raise Blocked("invalid_writer_services")
-    for key in ("deleteImages", "downtimeAcknowledged", "writersAcknowledged", "externalReferencesAcknowledged"):
-        if type(config[key]) is not bool:
-            raise Blocked("invalid_acknowledgement")
-    if config["deleteImages"]:
-        if not config["uploads"] or not config["externalReferencesAcknowledged"]:
-            raise Blocked("image_deletion_requires_uploads_and_external_reference_audit")
-    if config["deleteImages"] or action == "vacuum":
-        if not services or not config["downtimeAcknowledged"] or not config["writersAcknowledged"]:
-            raise Blocked("offline_work_requires_downtime_and_all_writers_controlled_acknowledgements")
+    if type(config["deleteImages"]) is not bool:
+        raise Blocked("invalid_image_policy")
+    if config["deleteImages"] and not config["uploads"]:
+        raise Blocked("image_cleanup_requires_uploads_directory")
+    # Offline safety belongs ONLY to manual Vacuum. Online work has no writer/permission checks.
+    if action == "vacuum":
+        services = config["services"]
+        if (not isinstance(services, list) or len(services) > 20 or len(set(services)) != len(services)
+                or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}", s) for s in services)):
+            raise Blocked("invalid_writer_services")
+        if (not services or config["downtimeAcknowledged"] is not True
+                or config["writersAcknowledged"] is not True):
+            raise Blocked("manual_vacuum_requires_downtime_and_all_writers_controlled_acknowledgements")
 
 
-def local_config():
+def local_config(action):
     def env(key, default=""):
         return os.environ.get("OKBRAINCC_DB_MAINTENANCE_" + key, default)
 
-    def flag(key):
-        value = env(key, "0")
+    def flag(key, default="0"):
+        value = env(key, default)
         if value not in ("0", "1"):
             raise Blocked("invalid_boolean_setting")
         return value == "1"
@@ -94,17 +105,16 @@ def local_config():
         raise Blocked("invalid_retention_days")
     return dict(host=env("REMOTE_HOST", "arunoda@prodbox.local"),
                 database=env("DATABASE", "/var/www/brain/brain.db"),
-                uploads=env("UPLOADS_DIRECTORY"), days=int(days),
-                services=env("WRITER_SERVICES", "brain").split(),
-                deleteImages=flag("DELETE_IMAGES"),
-                downtimeAcknowledged=flag("DOWNTIME_ACKNOWLEDGED"),
-                writersAcknowledged=flag("WRITERS_ACKNOWLEDGED"),
-                externalReferencesAcknowledged=flag("EXTERNAL_REFERENCES_ACKNOWLEDGED"),
+                uploads=env("UPLOADS_DIRECTORY") if env("UPLOADS_DIRECTORY").strip() else DEFAULT_UPLOADS, days=int(days),
+                services=env("WRITER_SERVICES", "brain").split() if action == "vacuum" else [],
+                deleteImages=flag("DELETE_IMAGES", "1"),
+                downtimeAcknowledged=flag("DOWNTIME_ACKNOWLEDGED") if action == "vacuum" else False,
+                writersAcknowledged=flag("WRITERS_ACKNOWLEDGED") if action == "vacuum" else False,
                 afterID=env("AFTER_ID"))
 
 
 def client(action):
-    config = local_config()
+    config = local_config(action)
     validate(config, action)  # Reject malformed input before even connecting.
     config["action"] = action
     encoded_config = base64.b64encode(json.dumps(config).encode()).decode()
@@ -124,7 +134,7 @@ def client(action):
         now = time.monotonic()
         if cancelled.is_set() and cancellation_sent_at is None:
             cancellation_sent_at = now
-            log("Stop requested; waiting for remote child termination and service restoration.")
+            log("Stop requested; waiting for remote child termination" + (" and Vacuum service restoration." if action == "vacuum" else "; online; Brain not stopped."))
             try:
                 process.stdin.write(b"cancel\n")
                 process.stdin.flush()
@@ -138,7 +148,7 @@ def client(action):
                 pass
             last_ping = now
         if cancellation_sent_at and now - cancellation_sent_at > 180:
-            log("ERROR: remote restoration unconfirmed; operator must inspect configured writers. No success claimed.")
+            log("ERROR: remote outcome unconfirmed; no success claimed." + (" Inspect configured Vacuum writers." if action == "vacuum" else " Online run did not stop Brain."))
             process.terminate()
             try:
                 process.wait(timeout=5)
@@ -211,8 +221,18 @@ class Remote:
         needed = ["--tool-history-only", "--db", "--days", "--apply"]
         if self.c["action"] == "vacuum":
             needed.append("--vacuum")
+        else:
+            needed.append("--no-checkpoint")
         if code or any(flag not in output for flag in needed):
             raise Blocked("history_counterpart_not_released_or_safe_flags_unsupported")
+
+    def image_help_check(self):
+        code, output, _ = self.command(["python3", IMAGE_SCRIPT, "--help"])
+        flags = set(re.findall(r"--[a-z][a-z0-9-]*", output))
+        needed = {"--db", "--uploads-dir", "--days", "--batch-size", "--after-id", "--apply", "--online"}
+        if code or not needed.issubset(flags):
+            raise Blocked("image_counterpart_online_unsupported_release_brain_first")
+        log("Image preflight: --online supported; no offline/legacy fallback.")
 
     def history(self, apply=False):
         phase = "history_apply" if apply else "history_dry_run"
@@ -223,6 +243,8 @@ class Remote:
             args.append("--apply")
             if self.c["action"] == "vacuum":
                 args.append("--vacuum")
+            else:
+                args.append("--no-checkpoint")  # Online history must not request a TRUNCATE checkpoint.
             self.mutated = True  # Even a failed command can have committed part of its work.
             self.report["history"] = "apply_started_actual_counts_unavailable"
         code, output, stderr = self.command(args)
@@ -272,8 +294,6 @@ class Remote:
                     raise Blocked("writer_stop_failed:" + service)
         self.verify_offline()
         log("OFFLINE verified: every configured writer inactive. Operator affirmed no other writers.")
-        if self.c["deleteImages"]:
-            log("Image deletion: operator explicitly affirmed external references audited/pinned.")
 
     def verify_offline(self):
         for service in self.c["services"]:
@@ -299,46 +319,71 @@ class Remote:
         self.report["restorationFailed"] = failed
         return failed
 
+    @staticmethod
+    def image_failure_reason(raw, output, stderr):
+        # Frozen machine-readable reasons only; never forward arbitrary diagnostics or body text.
+        if isinstance(raw, dict):
+            for key in ("blocked", "error", "reason"):
+                value = raw.get(key)
+                if isinstance(value, str) and value in ONLINE_BLOCKED_REASONS:
+                    return value
+        diagnostic = output + stderr
+        if re.search(r"schema|no such (table|column)|migrat", diagnostic, re.I):
+            return "image_schema_unavailable_release_brain_first"
+        if re.search(r"storage_root|root.mismatch", diagnostic, re.I):
+            return "image_storage_root_mismatch"
+        return "image_cli_blocked"
+
     def image_batch(self, after, apply=False, phase="images_preview"):
         args = ["python3", IMAGE_SCRIPT, "--db", self.c["database"], "--uploads-dir", self.c["uploads"],
                 "--days", str(self.c["days"]), "--batch-size", str(BATCH_SIZE)]
         if after:
             args += ["--after-id", after]
         if apply:
-            self.verify_offline()  # Recheck before EVERY deleting batch.
-            args += ["--apply", "--offline", "--confirm-app-db-scope"]
+            args += ["--apply", "--online"]
             self.mutated = True
         code, output, stderr = self.command(args)
         try:
             raw = json.loads(output)
         except (ValueError, TypeError):
-            raise Blocked("image_report_invalid_json")
-        if code not in (0, 1):
-            diagnostic = output + stderr
-            reason = "image_cli_blocked"
-            if re.search(r"schema|no such (table|column)|migrat", diagnostic, re.I):
-                reason = "image_schema_unavailable_release_brain_first"
-            elif re.search(r"storage_root|root.mismatch", diagnostic, re.I):
-                reason = "image_storage_root_mismatch"
-            log(f"ERROR {phase}: {reason}; exit={code}; diagnostic_bytes={len(diagnostic.encode())}; content suppressed.")
-            raise Blocked(reason)
+            raw = None
         numeric = ["examined", "candidates", "candidate_bytes", "deleted", "deleted_bytes", "missing_finalized", "errors", "reference_scan_bytes"]
-        if not isinstance(raw, dict) or any(type(raw.get(k)) is not int or raw[k] < 0 for k in numeric):
-            raise Blocked("image_report_missing_or_invalid_counters")
+        reason = self.image_failure_reason(raw, output, stderr) if code else None
+        if reason == "online-no-close-checkpoint-control":
+            log("BLOCKED: online runtime requires Python sqlite3.setconfig + SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE to avoid a hidden close-checkpoint. Operational prerequisite, not consent; no offline fallback.")
+        if apply and code == 1 and reason == "image_cli_blocked":
+            reason = "image_online_partial_see_reasons"
+        full_counters = isinstance(raw, dict) and all(type(raw.get(k)) is int and raw[k] >= 0 for k in numeric)
+        if not full_counters:
+            if code:
+                log(f"ERROR {phase}: {reason}; exit={code}; no complete verified report; raw diagnostics suppressed.")
+                raise Blocked(reason)  # No assumptions about deletion/cursor from a generic blocked shape.
+            raise Blocked("image_report_invalid_json" if raw is None else "image_report_missing_or_invalid_counters")
+        # Online failed reports still contain confirmed commits and protection/error metadata.
+        # Parse/validate them BEFORE classifying the exit, rather than discarding useful partial counts.
+        if not apply and code not in (0, 1):
+            raise Blocked(reason)
+        if apply and raw.get("execution_mode") != "online":
+            raise Blocked("image_report_execution_mode_not_online")
         if raw.get("mode") not in (("apply",) if apply else ("dry-run", "dry_run")):
             raise Blocked("image_report_wrong_mode")
         if raw.get("database") != self.c["database"] or raw.get("uploads_directory") != self.c["uploads"] or raw.get("retention_days") != self.c["days"]:
             raise Blocked("image_report_scope_mismatch")
-        if raw["examined"] > BATCH_SIZE or raw["candidates"] > raw["examined"]:
+        if (raw["examined"] > BATCH_SIZE or raw["candidates"] > raw["examined"]
+                or raw["deleted"] + raw["missing_finalized"] > raw["examined"]):
             raise Blocked("image_report_exceeded_batch_bound")
         if not apply and any(raw[k] for k in ("deleted", "deleted_bytes", "missing_finalized")):
             raise Blocked("image_dry_run_reported_mutation")
-        if code == 1 and not raw["errors"]:
+        if code and not raw["errors"]:
             raise Blocked("image_exit_error_without_error_count")
         if "next_after_id" not in raw:
             raise Blocked("image_report_missing_continuation")
         next_id = raw["next_after_id"]
-        if next_id is not None:
+        if apply and code:
+            # Failed online batches intentionally repeat their input cursor, including "" at start.
+            # Never adopt any backend continuation on failure, even if it claims another value.
+            next_id = after
+        elif next_id is not None:
             if type(next_id) not in (str, int) or not token(str(next_id)) or str(next_id) == after:
                 raise Blocked("image_cursor_invalid_or_stalled")
             next_id = str(next_id)
@@ -351,6 +396,10 @@ class Remote:
         safe = {k: raw[k] for k in numeric}
         safe.update(mode=raw["mode"], database=self.c["database"], uploads_directory=self.c["uploads"],
                     retention_days=self.c["days"], next_after_id=next_id, reasons=reasons, inventory=[], items=[])
+        if apply:
+            safe["execution_mode"] = "online"
+        if reason:
+            safe["blocked"] = reason
         cutoff = raw.get("cutoff_utc", "")
         if isinstance(cutoff, str) and re.fullmatch(r"[0-9TZ :.+-]{10,40}", cutoff):
             safe["cutoff_utc"] = cutoff
@@ -369,10 +418,10 @@ class Remote:
                                       bytes=row["bytes"], reason=row["reason"]))
         log("PHASE " + phase + ": candidates are not deletions; missing_finalized are tombstones, NOT deleted files.")
         log("CC_IMAGE_REPORT " + json.dumps(safe, sort_keys=True))
-        return safe
+        return safe, code, reason
 
     def sweep(self, apply=False):
-        totals = dict(mode="apply" if apply else "preview", batches=0, examined=0, candidates=0, candidateBytes=0,
+        totals = dict(mode="online-apply" if apply else "preview", batches=0, examined=0, candidates=0, candidateBytes=0,
                       deleted=0, deletedBytes=0, missingFinalized=0, errors=0, reasons={}, nextAfterID=self.c["afterID"] or None,
                       sweepComplete=False, cursorCanAdvance=False, unconfirmedBatch=False)
         self.report["images"] = totals
@@ -380,19 +429,32 @@ class Remote:
         seen = {after}
         for _ in range(MAX_BATCHES):
             totals["unconfirmedBatch"] = apply
-            batch = self.image_batch(after, apply, "images_apply_after_history" if apply else "images_preview")
-            totals["unconfirmedBatch"] = False
+            batch, exit_code, reason = self.image_batch(after, apply, "images_online_apply_after_history" if apply else "images_preview")
+            totals["unconfirmedBatch"] = apply and (
+                any(key.startswith("unconfirmed-") and count > 0 for key, count in batch["reasons"].items())
+                or any(item["reason"].startswith("unconfirmed-") for item in batch["items"]))
             totals["batches"] += 1
             for key, source in [("examined", "examined"), ("candidates", "candidates"), ("candidateBytes", "candidate_bytes"),
                                 ("deleted", "deleted"), ("deletedBytes", "deleted_bytes"), ("missingFinalized", "missing_finalized"), ("errors", "errors")]:
                 totals[key] += batch[source]
-            for reason, count in batch["reasons"].items():
-                totals["reasons"][reason] = totals["reasons"].get(reason, 0) + count
+            for protection_reason, count in batch["reasons"].items():
+                totals["reasons"][protection_reason] = totals["reasons"].get(protection_reason, 0) + count
+            if apply and (exit_code or batch["errors"] or totals["unconfirmedBatch"]):
+                # ANY failed online batch invalidates progress for this run, including exit 1.
+                # Keep confirmed counters from earlier batches, but retry from this run's saved input.
+                totals.update(nextAfterID=self.c["afterID"] or None, sweepComplete=False, cursorCanAdvance=False)
+                log(f"Online image batch exit={exit_code}; confirmed counters retained; unconfirmed={totals['unconfirmedBatch']}. Sweep NOT complete; saved cursor unchanged; retry next scheduled cycle.")
+                if reason in ONLINE_CANCEL_REASONS:
+                    raise Cancelled(reason)
+                if (reason in ONLINE_TRANSIENT_REASONS and not totals["deleted"] and not totals["missingFinalized"]
+                        and not totals["unconfirmedBatch"]):
+                    raise Deferred(reason)
+                raise Blocked(reason or "image_online_partial_see_reasons", code=exit_code if exit_code in (1, 2) else 2)
             after = batch["next_after_id"]
             if after is not None and after in seen:
                 raise Blocked("image_cursor_cycle")
             seen.add(after)
-            # Even per-file errors advance the sweep, and retry on the next sweep. Global errors never advance an unreported batch.
+            # Only successful online batches (or completed read-only preview batches) may advance.
             totals["nextAfterID"] = after
             totals["sweepComplete"] = after is None
             totals["cursorCanAdvance"] = True
@@ -425,8 +487,13 @@ class Remote:
                 if os.path.realpath(root) != root or not os.path.isdir(root):
                     raise Blocked("uploads_must_be_explicit_existing_canonical_directory")
             log("Scope: tool execution history only; conversations/messages/jobs/repository edits/files/user uploads are retained.")
-            log(f"Settings: days={self.c['days']}; image_policy={'offline deletion opt-in' if self.c['deleteImages'] else 'preview only'}; after_id={self.c['afterID'] or 'start'}; bound={MAX_BATCHES}x{BATCH_SIZE}")
+            image_apply = self.c["deleteImages"] and self.c["action"] == "apply"
+            log("Mode: " + ("manual offline Vacuum; images preview only." if self.c["action"] == "vacuum" else "online; Brain not stopped; no service checks/stop/start."))
+            log(f"Settings: cutoff_age_days={self.c['days']}; image_policy={'online cleanup' if self.c['deleteImages'] and self.c['action'] != 'vacuum' else 'preview only'}; after_id={self.c['afterID'] or 'start'}; bound={MAX_BATCHES}x{BATCH_SIZE}")
+            log("Images require old upload AND old owning chat/recent activity, inactive jobs; backend owns eligibility and root/hash/reference checks.")
             self.help_check()
+            if self.c["uploads"]:
+                self.image_help_check()
             self.history()
             if self.c["action"] == "dryRun":
                 if self.c["uploads"]:
@@ -434,16 +501,15 @@ class Remote:
             else:
                 # Detect undeployed image CLI/schema/root BEFORE any data deletion or stop.
                 if self.c["uploads"]:
-                    probe = self.image_batch(self.c["afterID"], phase="images_preapply_readonly_probe_not_sweep_totals")
+                    probe, _, _ = self.image_batch(self.c["afterID"], phase="images_preapply_readonly_probe_not_sweep_totals")
                     if probe["errors"]:
                         raise Blocked("image_preapply_probe_has_errors")
-                offline = self.c["deleteImages"] or self.c["action"] == "vacuum"
-                if offline:
+                if self.c["action"] == "vacuum":
                     self.stop_writers()
                     self.verify_offline()
                 self.history(apply=True)
                 if self.c["uploads"]:
-                    code = 1 if self.sweep(apply=self.c["deleteImages"]) else 0
+                    code = 1 if self.sweep(apply=image_apply) else 0
             if not self.c["uploads"]:
                 log("Images SKIPPED: uploads_directory_not_configured. History safe mode only; verify storage_root and configure preview. No images deleted.")
             self.check_cancel()
@@ -452,18 +518,26 @@ class Remote:
             if code:
                 self.report["error"] = "image_per_file_errors_see_reasons"
                 self.report["partial"] = True
-        except Cancelled:
-            code = 130
-            self.report.update(outcome="stopped", error="cancelled_remote_child_terminated", partial=self.mutated)
-            log("CANCELLED: cleanup terminated; Apply may be partial. Restoring only previously active writers.")
-        except Exception as error:
+        except Deferred as error:
             code = 2
+            self.report.update(outcome="deferred", error=str(error), partial=self.mutated)
+            log("Online images deferred: no confirmed image deletions or unconfirmed unlinks; NOT a completed sweep. History may have completed; scheduler retries next cycle.")
+        except Cancelled as error:
+            code = 130
+            reason = str(error) if str(error) in ONLINE_CANCEL_REASONS else "cancelled_remote_child_terminated"
+            self.report.update(outcome="stopped", error=reason, partial=self.mutated)
+            log("CANCELLED: cleanup terminated; Apply may be partial. " + ("Restoring only previously active Vacuum writers." if self.c["action"] == "vacuum" else "Online; Brain not stopped."))
+        except Exception as error:
+            code = error.code if isinstance(error, Blocked) else 2
             # Do not leak arbitrary exception / counterpart content into logs.
             reason = str(error) if isinstance(error, Blocked) else "remote_preflight_or_execution_error:" + type(error).__name__
             self.report.update(outcome="partial" if self.mutated else "failed", error=reason, partial=self.mutated)
             log("ERROR: " + reason)
         finally:
-            if self.restore_writers():
+            images = self.report["images"]
+            if code and images and images["mode"] == "online-apply":
+                images.update(nextAfterID=self.c["afterID"] or None, sweepComplete=False, cursorCanAdvance=False)
+            if self.c["action"] == "vacuum" and self.restore_writers():
                 code = 4
                 self.report.update(outcome="partial" if self.mutated else "failed", partial=self.mutated,
                                    error="service_restoration_failed_operator_intervention_required")

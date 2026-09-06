@@ -11,6 +11,8 @@ private final class FixtureExecutor {
   var restorationFailed = false
   var largeOutput = false
   var nextCursor: String? = nil
+  var deferred = false
+  var cursorCanAdvance = true
 
   func run(_ type: DBMaintenanceRunType, _ environment: [String: String], output: @Sendable (String) -> Void) async -> BackupScriptResult {
     calls.append((type, environment))
@@ -18,20 +20,23 @@ private final class FixtureExecutor {
       await withCheckedContinuation { release = $0 }
     }
     let exit = type == .dryRun ? dryRunExit : applyExit
+    let deleting = type == .apply && environment["OKBRAINCC_DB_MAINTENANCE_DELETE_IMAGES"] == "1"
+    let isDeferred = deferred && type == .apply
+    let reportError: Any = exit == 0 ? NSNull() : (isDeferred ? "online-snapshot-changed" : "fixture_per_file_error")
     let report: [String: Any] = [
-      "outcome": exit == 0 ? (nextCursor == nil ? "success" : "incomplete") : "partial",
+      "outcome": isDeferred ? "deferred" : exit == 0 ? (nextCursor == nil ? "success" : "incomplete") : "partial",
       "history": type == .dryRun ? "dry_run_zero_deletions" : "apply_succeeded_actual_counts_unavailable",
       "partial": exit != 0 || restorationFailed,
       "restorationFailed": restorationFailed && type != .dryRun,
-      "error": exit == 0 ? NSNull() : "fixture_per_file_error",
+      "error": reportError,
       "images": [
-        "mode": type != .dryRun && environment["OKBRAINCC_DB_MAINTENANCE_DELETE_IMAGES"] == "1" ? "apply" : "preview",
+        "mode": deleting ? "online-apply" : "preview",
         "batches": 3, "examined": 300, "candidates": 12, "candidateBytes": 120,
-        "deleted": type == .dryRun ? 0 : 10, "deletedBytes": type == .dryRun ? 0 : 100,
-        "missingFinalized": type == .dryRun ? 0 : 1, "errors": exit == 0 ? 0 : 2,
+        "deleted": deleting && !isDeferred ? 10 : 0, "deletedBytes": deleting && !isDeferred ? 100 : 0,
+        "missingFinalized": deleting && !isDeferred ? 1 : 0, "errors": exit == 0 || isDeferred ? 0 : 2,
         "reasons": ["protected_user": 200, "retained_db_reference": 80],
         "nextAfterID": nextCursor as Any? ?? NSNull(), "sweepComplete": nextCursor == nil,
-        "cursorCanAdvance": true, "unconfirmedBatch": false
+        "cursorCanAdvance": cursorCanAdvance, "unconfirmedBatch": false
       ]
     ]
     let data = try! JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
@@ -80,9 +85,6 @@ final class DBMaintenanceTests {
     var safety = DBMaintenanceSafetySettings()
     safety.uploadsDirectory = "/fixture/uploads"
     safety.deleteImages = true
-    safety.downtimeAcknowledged = true
-    safety.writersAcknowledged = true
-    safety.externalReferencesAcknowledged = true
     expectNil(store.updateConfiguration(host: "fixture", safety: safety))
   }
 
@@ -96,9 +98,9 @@ final class DBMaintenanceTests {
     expectEqual(store.schedule.intervalMinutes, 240)
     expectEqual(store.schedule.retentionDays, 23)
     expectEqual(store.remoteHost, "legacy-fixture")
-    expectFalse(store.safety.deleteImages)
+    expectTrue(store.safety.deleteImages)
     expectFalse(store.safety.externalReferencesAcknowledged)
-    expectTrue(store.safety.uploadsDirectory.isEmpty)
+    expectEqual(store.safety.uploadsDirectory, "/var/www/brain-data/uploads")
     let oldRun = """
     {"id":"20000000-0000-0000-0000-000000000001","runType":"apply","trigger":"automatic",
     "startedAt":100,"finishedAt":200,"status":"success","exitCode":0,"detail":"Apply maintenance","log":"legacy log"}
@@ -112,7 +114,95 @@ final class DBMaintenanceTests {
     expectFalse(empty.writersAcknowledged)
   }
 
-  func testExistingAutomaticScheduleStillDryRunThenApplyPreviewOnly() async throws {
+  func testV1PreviewDefaultsMigrateOnceWithoutRewritingAuditRuns() throws {
+    let oldSettings = Data("{\"deleteImages\":false,\"uploadsDirectory\":\" \"}".utf8)
+    preferences.set(oldSettings, forKey: "dbMaintenance.safety.v1")
+    let lastAttempt = Date(timeIntervalSinceReferenceDate: 12345)
+    preferences.set(lastAttempt, forKey: "dbMaintenance.lastAutomaticAttemptDate")
+    let runs = directory.appendingPathComponent("runs")
+    try FileManager.default.createDirectory(at: runs, withIntermediateDirectories: true)
+    let oldRun = """
+    {"id":"20000000-0000-0000-0000-000000000002","runType":"apply","trigger":"automatic",
+    "startedAt":100,"finishedAt":200,"status":"success","exitCode":0,"detail":"v1 preview","log":"old preview audit",
+    "configuration":{"remoteHost":"fixture","retentionDays":10,"imageAfterID":"200",
+    "safety":{"deleteImages":false,"uploadsDirectory":"","externalReferencesAcknowledged":false}}}
+    """
+    let runPath = runs.appendingPathComponent("old.json")
+    try Data(oldRun.utf8).write(to: runPath)
+    let store = store(FixtureExecutor())
+    expectTrue(store.safety.deleteImages)
+    expectEqual(store.safety.uploadsDirectory, "/var/www/brain-data/uploads")
+    expectFalse(store.safety.downtimeAcknowledged)
+    expectFalse(store.safety.writersAcknowledged)
+    expectFalse(store.safety.externalReferencesAcknowledged)
+    expectNotNil(preferences.data(forKey: "dbMaintenance.safety.v2"))
+    expectEqual(preferences.data(forKey: "dbMaintenance.safety.v1"), oldSettings)
+    expectEqual(preferences.object(forKey: "dbMaintenance.lastAutomaticAttemptDate") as? Date, lastAttempt)
+    let audit = try unwrap(store.runs.first?.configuration)
+    expectFalse(audit.safety.deleteImages)
+    expectTrue(audit.safety.uploadsDirectory.isEmpty)
+    expectNil(audit.imagePolicyVersion)
+    expectEqual(try Data(contentsOf: runPath), Data(oldRun.utf8))
+    // Even v1 offline Apply remains historical, not relabelled online by a decoder default.
+    let oldOffline = oldRun.replacingOccurrences(of: "\"deleteImages\":false", with: "\"deleteImages\":true")
+    let decoded = try JSONDecoder().decode(DBMaintenanceRun.self, from: Data(oldOffline.utf8))
+    expectEqual(decoded.configuration?.imageMode, "apply")
+    expectNil(decoded.configuration?.imagePolicyVersion)
+  }
+
+  func testCustomV1SettingsAndLaterExplicitDisablingSurviveReload() throws {
+    var legacy = DBMaintenanceSafetySettings()
+    legacy.database = "/custom/brain.db"
+    legacy.uploadsDirectory = "/custom/uploads"
+    legacy.writerServices = "custom-brain custom-worker"
+    legacy.downtimeAcknowledged = true
+    legacy.writersAcknowledged = true
+    legacy.externalReferencesAcknowledged = true
+    preferences.set(try JSONEncoder().encode(legacy), forKey: "dbMaintenance.safety.v1")
+    preferences.set(false, forKey: "dbMaintenance.scheduleEnabled")
+    preferences.set(300, forKey: "dbMaintenance.scheduleIntervalMinutes")
+    preferences.set(28, forKey: "dbMaintenance.retentionDays")
+    preferences.set("custom-host", forKey: "dbMaintenance.remoteHost")
+    let store = store(FixtureExecutor())
+    legacy.deleteImages = true
+    expectEqual(store.safety, legacy)
+    expectEqual(store.remoteHost, "custom-host")
+    expectFalse(store.schedule.isEnabled)
+    expectEqual(store.schedule.intervalMinutes, 300)
+    expectEqual(store.schedule.retentionDays, 28)
+    var disabled = store.safety
+    disabled.deleteImages = false
+    expectNil(store.updateConfiguration(host: store.remoteHost, safety: disabled))
+    let reloaded = self.store(FixtureExecutor())
+    expectEqual(reloaded.safety, disabled)
+    expectFalse(reloaded.safety.deleteImages)
+    expectEqual(reloaded.schedule, store.schedule)
+    expectEqual(reloaded.remoteHost, store.remoteHost)
+    disabled.uploadsDirectory = ""
+    expectNil(reloaded.updateConfiguration(host: reloaded.remoteHost, safety: disabled))
+    expectEqual(reloaded.safety.uploadsDirectory, "/var/www/brain-data/uploads")
+    expectFalse(self.store(FixtureExecutor()).safety.deleteImages)
+  }
+
+  func testObsoletePreviewAndOfflineCursorsNeverAdopted() async throws {
+    var legacy = DBMaintenanceSafetySettings()
+    legacy.uploadsDirectory = "/fixture/uploads"
+    let preview = DBMaintenanceConfiguration(remoteHost: "fixture", retentionDays: 10, safety: legacy)
+    legacy.deleteImages = true
+    let offline = DBMaintenanceConfiguration(remoteHost: "fixture", retentionDays: 10, safety: legacy)
+    preferences.set([preview.sweepKey: "100", offline.sweepKey: "200"], forKey: "dbMaintenance.imageSweepCursors.v1")
+    let fixture = FixtureExecutor()
+    let store = store(fixture)
+    enableImages(store)
+    store.runMaintenance(type: .dryRun)
+    try await waitUntil { store.activeRunID == nil }
+    store.runAutomaticMaintenance()
+    try await waitUntil { store.activeRunID == nil }
+    expectTrue(fixture.calls.allSatisfy { $0.1["OKBRAINCC_DB_MAINTENANCE_AFTER_ID"] == "" })
+    expectTrue(store.runs.allSatisfy { $0.configuration?.sweepKey != preview.sweepKey && $0.configuration?.sweepKey != offline.sweepKey })
+  }
+
+  func testExistingAutomaticScheduleStillDryRunThenOnlineApply() async throws {
     let fixture = FixtureExecutor()
     let store = store(fixture)
     expectTrue(store.schedule.isEnabled)
@@ -123,9 +213,20 @@ final class DBMaintenanceTests {
     expectEqual(fixture.calls.map(\.0), [.dryRun, .apply])
     expectTrue(store.runs.allSatisfy { $0.trigger == .automatic })
     for (_, env) in fixture.calls {
-      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_DELETE_IMAGES"], "0")
-      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_EXTERNAL_REFERENCES_ACKNOWLEDGED"], "0")
+      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_DELETE_IMAGES"], "1")
+      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_UPLOADS_DIRECTORY"], "/var/www/brain-data/uploads")
+      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_RETENTION_DAYS"], "10")
+      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_DOWNTIME_ACKNOWLEDGED"], "0")
+      expectEqual(env["OKBRAINCC_DB_MAINTENANCE_WRITERS_ACKNOWLEDGED"], "0")
+      expectNil(env["OKBRAINCC_DB_MAINTENANCE_EXTERNAL_REFERENCES_ACKNOWLEDGED"])
     }
+    expectTrue(store.safety.deleteImages)
+    expectEqual(store.runs[0].configuration, store.runs[1].configuration)
+    expectEqual(store.runs[0].configuration?.imagePolicyVersion, 2)
+    expectEqual(store.runs[0].configuration?.scheduleIntervalMinutes, 1440)
+    expectTrue(store.runs.allSatisfy { $0.log.contains("online; Brain not stopped") && $0.log.contains("every 1440 minutes") && $0.log.contains("cutoff age=10 days") })
+    expectEqual(store.runs[0].report?.images?.deleted, 10)
+    expectEqual(store.runs[1].report?.images?.deleted, 0)
     expectNil(store.runMaintenance(type: .vacuum, trigger: .automatic))
     expectEqual(fixture.calls.count, 2)
   }
@@ -149,6 +250,7 @@ final class DBMaintenanceTests {
     expectEqual(fixture.calls[1].1, frozen)
     expectEqual(store.runs[0].configuration, store.runs[1].configuration)
     expectEqual(store.runs[0].configuration?.retentionDays, 10)
+    expectEqual(store.runs[0].configuration?.scheduleIntervalMinutes, 1440)
     expectEqual(store.safety, changed)
   }
 
@@ -232,7 +334,7 @@ final class DBMaintenanceTests {
     expectEqual(next.calls[0].1["OKBRAINCC_DB_MAINTENANCE_AFTER_ID"], "")
   }
 
-  func testApplyPartialProgressPersistsButIsNotSuccess() async throws {
+  func testApplyPartialRetainsCountsButNeverAdvances() async throws {
     let fixture = FixtureExecutor()
     fixture.nextCursor = "300"
     fixture.applyExit = 1
@@ -246,7 +348,49 @@ final class DBMaintenanceTests {
     let reloaded = self.store(next)
     reloaded.runAutomaticMaintenance()
     try await waitUntil { reloaded.activeRunID == nil }
-    expectEqual(next.calls[0].1["OKBRAINCC_DB_MAINTENANCE_AFTER_ID"], "300")
+    expectEqual(next.calls[0].1["OKBRAINCC_DB_MAINTENANCE_AFTER_ID"], "")
+    expectEqual(store.runs.first?.report?.images?.deleted, 10)
+    expectEqual(reloaded.runs.first(where: { $0.status == .partial })?.report?.images?.deletedBytes, 100)
+  }
+
+  func testDeferredOnlineApplyRetriesWithoutUnprocessedCursorAdvance() async throws {
+    let fixture = FixtureExecutor()
+    fixture.nextCursor = "UNPROCESSED"
+    fixture.deferred = true
+    fixture.applyExit = 2
+    fixture.cursorCanAdvance = false
+    let store = store(fixture)
+    store.runAutomaticMaintenance()
+    try await waitUntil { store.activeRunID == nil }
+    expectEqual(store.runs.first?.status, .deferred)
+    expectEqual(store.runs.first?.report?.images?.deleted, 0)
+    let next = FixtureExecutor()
+    let reloaded = self.store(next)
+    reloaded.runAutomaticMaintenance()
+    try await waitUntil { reloaded.activeRunID == nil }
+    expectEqual(next.calls.map(\.0), [.dryRun, .apply])
+    expectTrue(next.calls.allSatisfy { $0.1["OKBRAINCC_DB_MAINTENANCE_AFTER_ID"] == "" })
+    expectNotNil(preferences.object(forKey: "dbMaintenance.lastAutomaticAttemptDate") as? Date)
+  }
+
+  func testManualVacuumRequiresSafetyAndNeverDeletesImages() async throws {
+    let fixture = FixtureExecutor()
+    let store = store(fixture)
+    _ = store.runVacuumWithDryRun()
+    expectTrue(fixture.calls.isEmpty)
+    expectEqual(store.runs.first?.status, .failed)
+    var safety = store.safety
+    safety.downtimeAcknowledged = true
+    safety.writersAcknowledged = true
+    expectNil(store.updateConfiguration(host: "fixture", safety: safety))
+    _ = store.runVacuumWithDryRun()
+    try await waitUntil { store.activeRunID == nil }
+    expectEqual(fixture.calls.map(\.0), [.dryRun, .vacuum])
+    expectTrue(store.safety.deleteImages) // Manual Vacuum must not disable normal online Apply.
+    expectTrue(fixture.calls.allSatisfy { $0.1["OKBRAINCC_DB_MAINTENANCE_DELETE_IMAGES"] == "0" })
+    expectEqual(store.runs[0].configuration, store.runs[1].configuration)
+    expectEqual(store.runs.first?.report?.images?.deleted, 0)
+    expectTrue(store.runs.first?.log.contains("manual offline Vacuum") == true)
   }
 
   func testSafetyAndRestorationFailureClassification() throws {
@@ -254,7 +398,18 @@ final class DBMaintenanceTests {
     safety.deleteImages = true
     var config = DBMaintenanceConfiguration(remoteHost: "fixture", retentionDays: 10, safety: safety)
     expectNotNil(config.validationError(for: .apply))
-    safety.deleteImages = false
+    safety.uploadsDirectory = "/fixture/uploads"
+    safety.writerServices = "invalid legacy writer setting; ignored online"
+    config = DBMaintenanceConfiguration(remoteHost: "fixture", retentionDays: 10, safety: safety)
+    expectNil(config.validationError(for: .apply))
+    expectNil(config.validationError(for: .dryRun))
+    expectNotNil(config.validationError(for: .vacuum))
+    safety.downtimeAcknowledged = true
+    safety.writersAcknowledged = true
+    safety.revokeVacuumConsent()
+    expectTrue(safety.deleteImages)
+    expectFalse(safety.downtimeAcknowledged)
+    expectFalse(safety.writersAcknowledged)
     config = DBMaintenanceConfiguration(remoteHost: "-oProxyCommand=oops", retentionDays: 10, safety: safety)
     expectNotNil(config.validationError(for: .dryRun))
     config = DBMaintenanceConfiguration(remoteHost: "fixture", retentionDays: 10, safety: safety)
@@ -335,13 +490,18 @@ private enum FixtureError: Error { case missingValue }
   static func main() async {
     let tests: [(String, (DBMaintenanceTests) async throws -> Void)] = [
       ("legacy decoding", { try $0.testLegacySettingsAndRunDecoding() }),
-      ("existing automatic preview schedule", { try await $0.testExistingAutomaticScheduleStillDryRunThenApplyPreviewOnly() }),
+      ("v1 migration preserves historical audit", { try $0.testV1PreviewDefaultsMigrateOnceWithoutRewritingAuditRuns() }),
+      ("custom settings and later explicit disabling", { try $0.testCustomV1SettingsAndLaterExplicitDisablingSurviveReload() }),
+      ("obsolete cursors isolated", { try await $0.testObsoletePreviewAndOfflineCursorsNeverAdopted() }),
+      ("existing automatic online schedule", { try await $0.testExistingAutomaticScheduleStillDryRunThenOnlineApply() }),
       ("frozen phase settings", { try await $0.testFrozenSettingsUsedByBothPhasesEvenAfterEdits() }),
       ("failed/missing Dry Run blocks Apply", { try await $0.testPartialDryRunOrMissingReportNeverStartsApply() }),
       ("full durable audit log", { try await $0.testFullAuditLogAndStructuredReportPersistAcrossStoreReload() }),
       ("resumable separate cursors", { try await $0.testCursorResumesAfterReloadAndDryRunNeverConsumesApplyCursor() }),
       ("cancelled preview never advances Apply cursor", { try await $0.testStoppedCompositeDryRunDoesNotAdvanceImageDeletionCursor() }),
-      ("partial Apply progress", { try await $0.testApplyPartialProgressPersistsButIsNotSuccess() }),
+      ("partial Apply counts without cursor advancement", { try await $0.testApplyPartialRetainsCountsButNeverAdvances() }),
+      ("online deferral retries unprocessed work", { try await $0.testDeferredOnlineApplyRetriesWithoutUnprocessedCursorAdvance() }),
+      ("manual offline Vacuum isolated", { try await $0.testManualVacuumRequiresSafetyAndNeverDeletesImages() }),
       ("safety/restoration status", { try $0.testSafetyAndRestorationFailureClassification() }),
       ("audit write failure", { try await $0.testAuditWriteFailureBlocksExecutionAndIsVisible() }),
       ("interrupted run reload", { try $0.testUnfinishedOldRunReloadIsUnconfirmedNotSuccessful() }),

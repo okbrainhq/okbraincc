@@ -2,8 +2,8 @@ import Foundation
 
 struct DBMaintenanceSafetySettings: Codable, Hashable {
   var database = "/var/www/brain/brain.db"
-  // Intentionally unset on migration. Source suggests /var/www/brain-data/uploads;
-  // the operator must verify the deployed storage_root, not infer it from CC.
+  // Legacy decoding stays truthful for persisted audits. The Store owns v2 defaults/migration.
+  static let defaultUploadsDirectory = "/var/www/brain-data/uploads"
   var uploadsDirectory = ""
   var writerServices = "brain"
   var deleteImages = false
@@ -29,11 +29,9 @@ struct DBMaintenanceSafetySettings: Codable, Hashable {
     externalReferencesAcknowledged = try values.decodeIfPresent(Bool.self, forKey: .externalReferencesAcknowledged) ?? false
   }
 
-  mutating func revokeConsent() {
-    deleteImages = false
+  mutating func revokeVacuumConsent() {
     downtimeAcknowledged = false
     writersAcknowledged = false
-    externalReferencesAcknowledged = false
   }
 }
 
@@ -43,9 +41,18 @@ struct DBMaintenanceConfiguration: Codable, Hashable {
   let retentionDays: Int
   let safety: DBMaintenanceSafetySettings
   var imageAfterID: String = ""
+  // Nil on old runs means the historical preview/offline policy, never the new online policy.
+  var imagePolicyVersion: Int? = nil
+  var scheduleIntervalMinutes: Int? = nil
+  var scheduleEnabled: Bool? = nil
+
+  var imageMode: String {
+    safety.deleteImages ? (imagePolicyVersion == 2 ? "online-apply" : "apply") : "preview"
+  }
 
   var sweepKey: String {
-    let scope = [remoteHost, safety.database, safety.uploadsDirectory, String(retentionDays), safety.deleteImages ? "apply" : "preview"]
+    var scope = [remoteHost, safety.database, safety.uploadsDirectory, String(retentionDays), imageMode]
+    if let imagePolicyVersion { scope.insert("image-policy-v\(imagePolicyVersion)", at: 0) }
     return (try? JSONEncoder().encode(scope).base64EncodedString()) ?? ""
   }
 
@@ -57,7 +64,6 @@ struct DBMaintenanceConfiguration: Codable, Hashable {
       ("WRITER_SERVICES", safety.writerServices), ("DELETE_IMAGES", safety.deleteImages ? "1" : "0"),
       ("DOWNTIME_ACKNOWLEDGED", safety.downtimeAcknowledged ? "1" : "0"),
       ("WRITERS_ACKNOWLEDGED", safety.writersAcknowledged ? "1" : "0"),
-      ("EXTERNAL_REFERENCES_ACKNOWLEDGED", safety.externalReferencesAcknowledged ? "1" : "0"),
       ("AFTER_ID", imageAfterID)
     ].map { (prefix + $0.0, $0.1) })
   }
@@ -79,17 +85,18 @@ struct DBMaintenanceConfiguration: Codable, Hashable {
           safety.uploadsDirectory.isEmpty || pathIsValid(safety.uploadsDirectory) else {
       return "Use explicit absolute database/uploads paths (no dot components) and 1–365 retention days."
     }
-    let services = safety.writerServices.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-    guard services.count <= 20, Set(services).count == services.count,
-          services.allSatisfy({ matches($0, "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}$") }) else {
-      return "Enter distinct documented systemd writer service names, separated by spaces."
+    if safety.deleteImages && safety.uploadsDirectory.isEmpty {
+      return "Image cleanup requires an uploads directory. Use the source default or an existing custom storage_root."
     }
-    if safety.deleteImages && (safety.uploadsDirectory.isEmpty || !safety.externalReferencesAcknowledged) {
-      return "Image deletion requires a verified uploads directory and an explicit external-reference audit/pinning affirmation."
-    }
-    if safety.deleteImages || type == .vacuum {
+    // Online Apply never validates/uses offline writer permissions or legacy image acknowledgements.
+    if type == .vacuum {
+      let services = safety.writerServices.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+      guard services.count <= 20, Set(services).count == services.count,
+            services.allSatisfy({ matches($0, "^[A-Za-z0-9][A-Za-z0-9_.@-]{0,100}$") }) else {
+        return "Enter distinct documented systemd writer service names for manual Vacuum, separated by spaces."
+      }
       guard !services.isEmpty, safety.downtimeAcknowledged, safety.writersAcknowledged else {
-        return "Offline work requires downtime permission and affirmation that ALL app/worker/filesystem writers are controlled by the configured services."
+        return "Manual Vacuum requires downtime permission and affirmation that ALL app/worker/filesystem writers are controlled by the configured services."
       }
     }
     return nil
@@ -129,6 +136,7 @@ struct DBMaintenanceReport: Codable, Hashable {
 
   func status(exitCode: Int32) -> DBMaintenanceRunStatus {
     if restorationFailed { return partial ? .partial : .failed }
+    if outcome == "deferred" { return .deferred }
     if exitCode != 0 {
       if outcome == "stopped" { return .stopped }
       return partial || outcome == "partial" ? .partial : .failed
