@@ -6,6 +6,7 @@ struct DBMaintenanceView: View {
   @State private var isShowingSettings = false
   @State private var isConfirmingVacuum = false
   @State private var vacuumConfirmText = ""
+  @State private var isConfirmingImageApply = false
 
   private var isRunning: Bool {
     store.activeRunID != nil
@@ -23,6 +24,10 @@ struct DBMaintenanceView: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 18) {
         header
+        if let error = store.persistenceError {
+          Label(error, systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.red)
+        }
 
         HStack(alignment: .top, spacing: 18) {
           runsList
@@ -57,7 +62,15 @@ struct DBMaintenanceView: View {
         vacuumConfirmText = ""
       }
     } message: {
-      Text("Vacuum rewrites the entire database and blocks the app. The brain service will be stopped during the process.\n\nThis should only be done during a planned maintenance window.\n\nType CONFIRM to proceed.")
+      Text("Vacuum is manual only and requires a planned downtime window. Configured writers (\(store.safety.writerServices)) must cover ALL app/worker/filesystem writers. Only previously active services will be restored. Image policy: \(store.safety.deleteImages ? "delete eligible agent images" : "preview only").\n\nType CONFIRM to proceed.")
+    }
+    .alert("Offline Apply + Agent Images", isPresented: $isConfirmingImageApply) {
+      Button("Start Offline Apply", role: .destructive) {
+        selectedRunID = store.runApplyWithDryRun()
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("After a successful Dry Run, configured writers (\(store.safety.writerServices)) will be stopped. Only eligible aged agent images may be deleted. Your saved all-writers and external-reference audit affirmations must still be true. Previously inactive services will NOT be started.")
     }
   }
 
@@ -94,11 +107,13 @@ struct DBMaintenanceView: View {
         .accessibilityLabel("Dry Run")
 
         Button {
-          if let runID = store.runApplyWithDryRun() {
-            selectedRunID = runID
+          if store.safety.deleteImages {
+            isConfirmingImageApply = true
+          } else {
+            selectedRunID = store.runApplyWithDryRun()
           }
         } label: {
-          Label("Apply", systemImage: "checkmark.circle")
+          Label(store.safety.deleteImages ? "Apply + Images (offline)" : "Apply History", systemImage: "checkmark.circle")
         }
         .disabled(isRunning)
         .accessibilityLabel("Apply")
@@ -141,11 +156,19 @@ struct DBMaintenanceView: View {
         }
       }
 
-      Text("cleanup-old-execution-history.sh --days \(store.schedule.retentionDays)")
+      Text("cleanup-old-execution-history.sh --tool-history-only --days \(store.schedule.retentionDays)")
         .font(.callout.monospaced())
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
+      Text(store.safety.deleteImages
+           ? "Image deletion OPTED IN: scheduled Apply may stop all configured writers. No automatic Vacuum."
+           : "Images: preview only. Scheduled Apply cleans tool history without downtime; image deletion requires explicit opt-in in Settings.")
+        .font(.callout)
+        .foregroundStyle(store.safety.deleteImages ? .orange : .secondary)
+      Text(store.imageProgressLabel)
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
   }
 
@@ -153,7 +176,7 @@ struct DBMaintenanceView: View {
   private var statusBadge: some View {
     if let lastRun = runs.first(where: { $0.status != .running }) {
       Label(
-        lastRun.status == .success ? "Healthy" : "Last Run \(lastRun.status.title)",
+        lastRun.status == .success ? "Last run succeeded" : "Last Run \(lastRun.status.title)",
         systemImage: lastRun.status == .success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
       )
       .foregroundStyle(lastRun.status == .success ? .green : .orange)
@@ -226,8 +249,19 @@ struct DBMaintenanceView: View {
             .foregroundStyle(.secondary)
         }
 
+        if let configuration = selectedRun.configuration {
+          Text("Frozen scope: \(configuration.remoteHost) · \(configuration.safety.database) · \(configuration.retentionDays) days")
+            .font(.caption.monospaced())
+            .textSelection(.enabled)
+        }
+        if let report = selectedRun.report {
+          DBMaintenanceReportView(report: report)
+        } else if !selectedRun.isRunning {
+          Text("Legacy run or missing terminal report: no structured removal totals available. See logs.")
+            .foregroundStyle(.secondary)
+        }
         VStack(alignment: .leading, spacing: 10) {
-          Text("Logs")
+          Text("Persistent phase logs · metadata only")
             .font(.headline)
 
           ScrollView {
@@ -312,6 +346,8 @@ private struct DBMaintenanceRunRow: View {
       return "xmark.circle.fill"
     case .stopped:
       return "stop.circle.fill"
+    case .warning, .incomplete, .partial:
+      return "exclamationmark.triangle.fill"
     }
   }
 
@@ -323,7 +359,7 @@ private struct DBMaintenanceRunRow: View {
       .green
     case .failed:
       .red
-    case .stopped:
+    case .stopped, .warning, .incomplete, .partial:
       .orange
     }
   }
@@ -343,6 +379,9 @@ private struct DBMaintenanceSettingsView: View {
 
   @Environment(\.dismiss) private var dismiss
   @State private var editingRemoteHost: String = ""
+  @State private var draft = DBMaintenanceSafetySettings()
+  @State private var enablePhrase = ""
+  @State private var validationError: String?
 
   private var schedule: DBMaintenanceScheduleSettings {
     store.schedule
@@ -361,9 +400,9 @@ private struct DBMaintenanceSettingsView: View {
 
           Spacer()
 
-          Button("Done") {
-            saveRemoteHostIfNeeded()
-            dismiss()
+          Button("Save & Done") {
+            validationError = store.updateConfiguration(host: editingRemoteHost, safety: draft)
+            if validationError == nil { dismiss() }
           }
           .keyboardShortcut(.defaultAction)
           .accessibilityLabel("Done")
@@ -373,10 +412,12 @@ private struct DBMaintenanceSettingsView: View {
           VStack(alignment: .leading, spacing: 6) {
             Text("SSH Host")
               .foregroundStyle(.secondary)
-            TextField("user@host.local", text: $editingRemoteHost)
+            TextField("user@host.local", text: Binding(
+              get: { editingRemoteHost },
+              set: { editingRemoteHost = $0; draft.revokeConsent(); enablePhrase = "" }
+            ))
               .textFieldStyle(.roundedBorder)
               .font(.callout.monospaced())
-              .onSubmit { saveRemoteHostIfNeeded() }
           }
 
           Toggle(
@@ -423,12 +464,16 @@ private struct DBMaintenanceSettingsView: View {
             ),
             in: 1...365
           ) {
-            Text("Keep logs for \(schedule.retentionDays) days")
+            Text("Keep execution history and CC audit logs for \(schedule.retentionDays) days")
           }
         }
         .padding(16)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
 
+        imageSafetySettings
+        if let validationError {
+          Text(validationError).foregroundStyle(.red)
+        }
         Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
           GridRow {
             Text("Next Run")
@@ -457,13 +502,67 @@ private struct DBMaintenanceSettingsView: View {
     .frame(minWidth: 680, minHeight: 520)
     .onAppear {
       editingRemoteHost = store.remoteHost
+      draft = store.safety
     }
   }
 
-  private func saveRemoteHostIfNeeded() {
-    let trimmed = editingRemoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, trimmed != store.remoteHost else { return }
-    store.updateRemoteHost(trimmed)
+  private var imageSafetySettings: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("Agent images & offline safety").font(.headline)
+      Text("Release the counterpart Brain code AND provenance schema first. CC never runs migrations. Images without known agent provenance, user uploads, pinned images and retained DB references remain protected. Repository files and conversations/messages are never cleanup targets.")
+        .font(.callout).foregroundStyle(.secondary)
+      TextField("Existing remote app database", text: scopeBinding(\.database))
+        .textFieldStyle(.roundedBorder)
+      TextField("Verified absolute uploads directory (empty = images unavailable)", text: scopeBinding(\.uploadsDirectory))
+        .textFieldStyle(.roundedBorder)
+        .accessibilityIdentifier("maintenance.uploadsDirectory")
+      Text("Source-indicated path: /var/www/brain-data/uploads. Verify the actual canonical storage_root on the target; do not assume it. With a directory configured, every normal Apply still previews images unless explicitly opted in below.")
+        .font(.caption).foregroundStyle(.secondary)
+      TextField("All writer services (space-separated)", text: scopeBinding(\.writerServices))
+        .textFieldStyle(.roundedBorder)
+      Text("Documented default: brain (not brain.service, to match existing sudoers). Extra services require explicit sudo permissions. Source defines no separate worker service; live overrides, timers, external workers and filesystem writers must be audited by the operator.")
+        .font(.caption).foregroundStyle(.secondary)
+      Toggle("I authorize downtime on manual AND scheduled offline Apply; Vacuum remains manual.",
+             isOn: consentBinding(\.downtimeAcknowledged))
+      Toggle("ALL app/worker/filesystem writers are controlled by exactly these services; no uncontrolled writer can restart or write during this window.",
+             isOn: consentBinding(\.writersAcknowledged))
+      Toggle("I have audited external references and pinned images they need. Database references alone cannot establish this.",
+             isOn: consentBinding(\.externalReferencesAcknowledged))
+        .accessibilityIdentifier("maintenance.externalReferencesAcknowledged")
+      if !draft.deleteImages {
+        TextField("Type DELETE AGENT IMAGES to enable removal", text: $enablePhrase)
+          .textFieldStyle(.roundedBorder)
+      }
+      Toggle("Opt in to eligible agent-image deletion during manual AND scheduled Apply",
+             isOn: $draft.deleteImages)
+        .disabled(!draft.deleteImages && (enablePhrase != "DELETE AGENT IMAGES" || draft.uploadsDirectory.isEmpty ||
+          !draft.downtimeAcknowledged || !draft.writersAcknowledged || !draft.externalReferencesAcknowledged))
+        .accessibilityIdentifier("maintenance.deleteImages")
+      Text("Unchecked by default, including existing installations. Dry Run never deletes or stops services. Apply rechecks image schema/scope, then stops and verifies all configured writers before image deletion. Only previously active services are restored. Changing host, paths or services revokes these permissions.")
+        .font(.caption).foregroundStyle(.secondary)
+      Text("Bounded sweeps: at most 3 × 100 rows per phase, plus a separate 100-row read-only pre-Apply probe. Preview and deletion have separate persisted cursors, keyed by host/database/uploads/retention/policy. Incomplete sweeps resume on later runs; protected/error rows are retried next sweep. Dry Run before history pruning is only a preview of that moment—not a prediction of post-prune eligibility.")
+        .font(.caption).foregroundStyle(.secondary)
+      Text("Schedule changes above save immediately. Scope/consent changes save with Save & Done. Active Dry Run → Apply pairs keep their frozen settings.")
+        .font(.caption).foregroundStyle(.secondary)
+    }
+    .toggleStyle(.checkbox)
+    .padding(16)
+    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+  }
+
+  private func scopeBinding(_ key: WritableKeyPath<DBMaintenanceSafetySettings, String>) -> Binding<String> {
+    Binding(get: { draft[keyPath: key] }, set: {
+      draft[keyPath: key] = $0
+      draft.revokeConsent()
+      enablePhrase = ""
+    })
+  }
+
+  private func consentBinding(_ key: WritableKeyPath<DBMaintenanceSafetySettings, Bool>) -> Binding<Bool> {
+    Binding(get: { draft[keyPath: key] }, set: {
+      draft[keyPath: key] = $0
+      if !$0 { draft.deleteImages = false; enablePhrase = "" }
+    })
   }
 
   private func updateInterval(hours: Int? = nil, minutes: Int? = nil) {
@@ -480,6 +579,57 @@ private struct DBMaintenanceSettingsView: View {
       Text(value)
         .font(.callout.monospaced())
         .textSelection(.enabled)
+    }
+  }
+}
+
+
+private struct DBMaintenanceReportView: View {
+  let report: DBMaintenanceReport
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Text("Removal report").font(.headline)
+      Text(historyLabel)
+      Text("History tables in the log are pre-Apply candidate rows / approximate payload. News-search rows overlap tool-history rows; totals are not summed.")
+        .font(.caption).foregroundStyle(.secondary)
+      if let images = report.images {
+        Text("Images \(images.mode) · \(images.examined) examined in \(images.batches) batches")
+        Text("Candidates: \(images.candidates) files / \(images.candidateBytes) bytes")
+        Text("Confirmed reported deletions: \(images.deleted) files / \(images.deletedBytes) bytes; missing finalized: \(images.missingFinalized); per-file errors: \(images.errors)")
+        if images.unconfirmedBatch == true {
+          Text("Interrupted/invalid Apply batch: additional deletions are UNKNOWN. Totals above cover only confirmed batches.")
+            .foregroundStyle(.red)
+        }
+        Text(images.sweepComplete ? "End of this traversal reached; protected/error rows are rechecked next sweep." :
+          "Sweep INCOMPLETE. Resume after \(images.nextAfterID ?? "start"). This is not a full-upload cleanup claim.")
+          .foregroundStyle(images.sweepComplete ? Color.secondary : Color.orange)
+        ForEach(images.reasons.keys.sorted(), id: \.self) { reason in
+          Text("\(reason): \(images.reasons[reason] ?? 0)")
+            .font(.caption.monospaced())
+        }
+      } else {
+        Text("No completed image sweep. See phase logs for unavailable/blocked/probe details.")
+          .foregroundStyle(.orange)
+      }
+      if report.restorationFailed {
+        Text("SERVICE RESTORATION FAILED — operator intervention required.")
+          .foregroundStyle(.red).bold()
+      }
+      if report.partial { Text("Partial result: some work may have committed.").foregroundStyle(.orange) }
+      if let error = report.error { Text(error).font(.caption.monospaced()).foregroundStyle(.red) }
+    }
+    .textSelection(.enabled)
+    .padding(12)
+    .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+  }
+
+  private var historyLabel: String {
+    switch report.history {
+    case "dry_run_zero_deletions": return "History Dry Run: actual deletions = 0."
+    case "apply_succeeded_actual_counts_unavailable": return "History Apply command succeeded. Actual deleted rows/bytes are not supplied by the counterpart."
+    case "apply_started_actual_counts_unavailable": return "History Apply started; actual changes are unknown / possibly partial."
+    default: return "History not completed. See phase logs."
     }
   }
 }

@@ -44,6 +44,9 @@ enum DBMaintenanceRunStatus: String, Codable, Hashable {
   case success
   case failed
   case stopped
+  case warning
+  case incomplete
+  case partial
 
   var title: String {
     switch self {
@@ -54,7 +57,13 @@ enum DBMaintenanceRunStatus: String, Codable, Hashable {
     case .failed:
       "Failed"
     case .stopped:
-      "Stopped"
+      "Stopped / outcome may be partial"
+    case .warning:
+      "Completed with warnings"
+    case .incomplete:
+      "Sweep in progress"
+    case .partial:
+      "Partial / needs attention"
     }
   }
 }
@@ -74,6 +83,9 @@ struct DBMaintenanceRun: Codable, Hashable, Identifiable {
   var exitCode: Int32?
   var detail: String
   var log: String
+  // Optional so existing saved run JSON continues to decode unchanged.
+  var configuration: DBMaintenanceConfiguration? = nil
+  var report: DBMaintenanceReport? = nil
 
   var isRunning: Bool {
     status == .running
