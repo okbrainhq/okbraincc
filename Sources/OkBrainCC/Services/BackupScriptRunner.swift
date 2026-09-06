@@ -38,6 +38,7 @@ enum BackupScriptRunner {
     scriptName: String,
     arguments: [String],
     extraEnvironment: [String: String] = [:],
+    maximumOutputLength: Int? = 120_000,
     onProcessStart: @escaping (Process) -> Void,
     onOutput: @escaping @Sendable (String) -> Void
   ) async throws -> BackupScriptResult {
@@ -62,7 +63,7 @@ enum BackupScriptRunner {
       process.standardOutput = pipe
       process.standardError = pipe
 
-      let capture = ProtectedString()
+      let capture = ProtectedString(maximumLength: maximumOutputLength)
 
       pipe.fileHandleForReading.readabilityHandler = { handle in
         let data = handle.availableData
@@ -122,7 +123,9 @@ enum BackupScriptRunner {
 private final class ProtectedString: @unchecked Sendable {
   private let lock = NSLock()
   private var storage = ""
-  private let maximumLength = 120_000
+  private let maximumLength: Int?
+
+  init(maximumLength: Int?) { self.maximumLength = maximumLength }
 
   var value: String {
     lock.lock()
@@ -133,7 +136,7 @@ private final class ProtectedString: @unchecked Sendable {
   func append(_ text: String) {
     lock.lock()
     storage.append(text)
-    if storage.count > maximumLength {
+    if let maximumLength, storage.count > maximumLength {
       storage.removeFirst(storage.count - maximumLength)
     }
     lock.unlock()

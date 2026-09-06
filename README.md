@@ -103,6 +103,22 @@ Open **Local AI** in the sidebar to configure:
 
 After changing model rows, restart the local server so `/v1/models` and API clients see the updated catalog.
 
+## DB Maintenance
+
+The existing Dry Run → Apply timer now cleans **tool execution history only**, with agent-image previews and persistent candidate/removal/protection reports. Existing schedules/settings stay intact; image deletion is **off by default** and requires explicit uploads scope, all-writers/downtime/external-reference acknowledgements, and deliberate opt-in. Vacuum stays manual.
+
+See [DB Maintenance release, safety and logging guide](docs/db-maintenance.md) before enabling image deletion. **Release the counterpart Brain code and provenance schema first.** CC does not migrate the remote database or guess the deployed uploads root.
+
+Safe focused validation (no GUI launch, real SSH or CC process kills):
+
+```bash
+bash scripts/test-db-maintenance.sh
+swift build --disable-sandbox --cache-path .build/swiftpm-cache
+./scripts/build.sh --dev
+```
+
+The full `scripts/test.sh` includes mock production launches and process-name kills; do not use it for fixture-only maintenance work.
+
 ## Development vs Production
 
 The app supports two isolated environments so local development never touches production state.

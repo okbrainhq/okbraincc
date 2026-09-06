@@ -28,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ShutdownPanelController.shared.show(message: "Stopping services…")
 
     Task {
+      if DBMaintenanceStore.shared.activeRunID != nil {
+        ShutdownPanelController.shared.show(message: "Stopping maintenance and restoring configured writers…")
+        await DBMaintenanceStore.shared.stopForAppTermination()
+      }
       await OKProxyClientStore.shared.stopForAppTermination()
       await OKRunLocalSwitchStore.shared.stopForAppTermination()
       ShutdownPanelController.shared.close()
