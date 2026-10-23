@@ -51,7 +51,8 @@ mkdir -p "$APP_RESOURCES"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 cp -R "$BACKUP_AGENT_SOURCE" "$APP_RESOURCES/BackupAgent"
-/usr/bin/swift "$ROOT_DIR/scripts/generate_app_icon.swift" "$APP_ICON" "$MENU_BAR_SYMBOL"
+mkdir -p "$ROOT_DIR/.build/clang-module-cache"
+/usr/bin/swift -module-cache-path "$ROOT_DIR/.build/clang-module-cache" "$ROOT_DIR/scripts/generate_app_icon.swift" "$APP_ICON" "$MENU_BAR_SYMBOL"
 
 cp "$PLIST" "$INFO_PLIST"
 

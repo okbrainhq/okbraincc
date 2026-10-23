@@ -18,27 +18,22 @@ final class DBMaintenanceStore: ObservableObject {
 
   @Published private(set) var runs: [DBMaintenanceRun] = []
   @Published private(set) var activeRunID: UUID?
+  @Published private(set) var isStopping = false
   @Published private(set) var schedule: DBMaintenanceScheduleSettings
   @Published private(set) var remoteHost: String
   @Published private(set) var safety: DBMaintenanceSafetySettings
   @Published private(set) var persistenceError: String?
 
-  private struct Composite {
-    let target: DBMaintenanceRunType
-    let trigger: DBMaintenanceTrigger
-    let configuration: DBMaintenanceConfiguration
-  }
-  private var pendingComposite: Composite?
   private let defaults: UserDefaults
   let runsDirectoryURL: URL
   private let isMockMode: Bool
   private let execute: DBMaintenanceExecutor
   private var scheduler: Timer?
+  private var wakeObserver: NSObjectProtocol?
   private var activeProcess: Process?
   private var stoppedRunIDs = Set<UUID>()
   private var loggingFailedRunIDs = Set<UUID>()
   private var lastAutomaticRunDate: Date?
-  private var cursors: [String: String]
 
   // Dependency injection is intentionally explicit: tests never initialize the shared store,
   // read real preferences, contact SSH, start the scheduler, or prune real saved runs.
@@ -56,12 +51,11 @@ final class DBMaintenanceStore: ObservableObject {
     schedule = Self.loadSchedule(defaults: defaults)
     remoteHost = defaults.string(forKey: Self.remoteHostKey) ?? "arunoda@prodbox.local"
     safety = Self.loadSafety(defaults: defaults)
-    cursors = defaults.dictionary(forKey: Self.cursorsKey) as? [String: String] ?? [:]
     lastAutomaticRunDate = defaults.object(forKey: Self.lastAutomaticAttemptDateKey) as? Date
     runs = Self.loadPersistedRuns(at: runsDirectoryURL)
   }
 
-  // MARK: - Existing scheduler (same enabled/interval/retention keys and defaults)
+  // MARK: - Daily scheduler with catch-up on launch/wake and hourly failed-run retries
 
   func startScheduler() {
     guard scheduler == nil else { return }
@@ -70,18 +64,24 @@ final class DBMaintenanceStore: ObservableObject {
     }
     timer.tolerance = 10
     scheduler = timer
+    wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+      forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in self?.evaluateAutomaticRun() }
+    }
+    evaluateAutomaticRun()
   }
 
-  private func evaluateAutomaticRun() {
+  func evaluateAutomaticRun(now: Date = Date()) {
     guard schedule.shouldRunAutomatically(
-      now: Date(), lastAttemptDate: lastAutomaticRunDate,
+      now: now, lastAttemptDate: lastAutomaticRunDate,
       lastRunDate: lastSuccessfulRunDate, isActive: activeRunID != nil
     ) else { return }
     runAutomaticMaintenance()
   }
 
   private var lastSuccessfulRunDate: Date? {
-    runs.first { [.success, .warning, .incomplete].contains($0.status) }?.finishedAt
+    runs.first { $0.runType == .apply && $0.status == .success }?.finishedAt
   }
 
   // MARK: - Actions
@@ -89,65 +89,63 @@ final class DBMaintenanceStore: ObservableObject {
   @discardableResult
   func runMaintenance(type: DBMaintenanceRunType, trigger: DBMaintenanceTrigger = .manual) -> UUID? {
     guard activeRunID == nil else { return activeRunID }
+    guard trigger == .manual || schedule.isEnabled else { return nil }
     guard type != .vacuum || trigger == .manual else { return nil } // No automatic Vacuum, including API callers.
-    if type != .dryRun { return startComposite(target: type, trigger: trigger) }
-    return startRun(type: type, trigger: trigger, configuration: configuration(previewOnly: true))
+    return startRun(type: type, trigger: trigger, configuration: configuration(previewOnly: type == .vacuum))
   }
 
   func runAutomaticMaintenance() {
-    _ = startComposite(target: .apply, trigger: .automatic)
+    guard schedule.isEnabled else { return }
+    _ = runMaintenance(type: .apply, trigger: .automatic)
   }
 
-  func runApplyWithDryRun() -> UUID? {
-    startComposite(target: .apply, trigger: .manual)
+  func runCleanup() -> UUID? {
+    runMaintenance(type: .apply)
   }
 
-  func runVacuumWithDryRun() -> UUID? {
-    startComposite(target: .vacuum, trigger: .manual)
+  func runVacuum(confirmed: Bool) -> UUID? {
+    guard confirmed, activeRunID == nil else { return nil }
+    var frozen = configuration(previewOnly: true)
+    frozen.safety.downtimeAcknowledged = true
+    frozen.safety.writersAcknowledged = true
+    return startRun(type: .vacuum, trigger: .manual, configuration: frozen)
   }
 
   private func configuration(previewOnly: Bool = false) -> DBMaintenanceConfiguration {
     var settings = safety
-    if previewOnly { settings.deleteImages = false }
+    settings.revokeVacuumConsent() // Vacuum confirmation is per invocation, never a saved permission.
+    settings.deleteImages = !previewOnly // One policy toggle controls logs AND project images.
     var result = DBMaintenanceConfiguration(remoteHost: remoteHost, retentionDays: schedule.retentionDays, safety: settings)
-    result.imagePolicyVersion = 2
+    result.imagePolicyVersion = 3
     result.scheduleIntervalMinutes = schedule.intervalMinutes
     result.scheduleEnabled = schedule.isEnabled
-    result.imageAfterID = cursors[result.sweepKey] ?? ""
+    result.imageAfterID = ""
     return result
-  }
-
-  private func startComposite(target: DBMaintenanceRunType, trigger: DBMaintenanceTrigger) -> UUID? {
-    guard activeRunID == nil else { return activeRunID }
-    let frozen = configuration(previewOnly: target == .vacuum)
-    pendingComposite = Composite(target: target, trigger: trigger, configuration: frozen)
-    return startRun(type: .dryRun, trigger: trigger, configuration: frozen, validationType: target)
   }
 
   private func startRun(type: DBMaintenanceRunType, trigger: DBMaintenanceTrigger,
                         configuration: DBMaintenanceConfiguration, validationType: DBMaintenanceRunType? = nil) -> UUID {
-    let mode = type == .vacuum ? "manual offline Vacuum; image preview only" :
+    let mode = type == .vacuum ? "manual offline Vacuum; no retention deletions" :
       "online; Brain not stopped (no service checks/stop/start)"
     let header = "Starting \(type.title). Frozen host=\(configuration.remoteHost), cutoff age=\(configuration.retentionDays) days.\n" +
       "Schedule: \(configuration.scheduleEnabled == true ? "enabled" : "off"), every \(configuration.scheduleIntervalMinutes ?? schedule.intervalMinutes) minutes; trigger=\(trigger.rawValue). Mode: \(mode).\n" +
-      "Scope: tool history only; conversations/messages/jobs/repository files retained. Images: \(configuration.safety.deleteImages ? "automatic online cleanup (Dry Run still read-only)" : "preview only").\n" +
-      "Image eligibility: upload AND owning chat/recent activity older than \(configuration.retentionDays) days, inactive jobs; backend enforces user/unknown/shared/retained-reference protections.\n"
+      "Scope: Code Project tool logs/images and web-search logs; ALL chat text and repository files retained. Images: \(configuration.safety.deleteImages ? "Code Project retention" : "not part of Vacuum").\n" +
+      "Image eligibility: older than \(configuration.retentionDays) days with proven Code Project ownership; outside references and pins protected.\n"
     let run = DBMaintenanceRun(id: UUID(), runType: type, trigger: trigger, startedAt: Date(), finishedAt: nil,
                                status: .running, exitCode: nil, detail: "\(type.title) maintenance", log: header,
                                configuration: configuration)
     runs.insert(run, at: 0)
     activeRunID = run.id
+    isStopping = false
     if trigger == .automatic {
       lastAutomaticRunDate = Date()
       defaults.set(lastAutomaticRunDate, forKey: Self.lastAutomaticAttemptDateKey)
     }
     guard persistRun(run) else {
-      pendingComposite = nil
       _ = finish(runID: run.id, status: .failed, exitCode: nil, message: "Cannot persist audit log; no script launched.\n")
       return run.id
     }
     if let error = configuration.validationError(for: validationType ?? type) {
-      pendingComposite = nil
       _ = finish(runID: run.id, status: .failed, exitCode: 2, message: "Blocked: \(error)\n")
       return run.id
     }
@@ -174,7 +172,6 @@ final class DBMaintenanceStore: ObservableObject {
         }
         complete(runID: run.id, type: type, configuration: configuration, header: header, result: result)
       } catch {
-        pendingComposite = nil
         _ = finish(runID: run.id, status: .failed, exitCode: nil,
                    message: "Script launch/transport failed: \(error.localizedDescription). Remote outcome/restoration may require verification.\n")
       }
@@ -194,29 +191,16 @@ final class DBMaintenanceStore: ObservableObject {
     var status = report?.status(exitCode: result.exitCode) ?? .failed
     if loggingFailed { status = report?.partial == true ? .partial : .failed }
     else if stopped, report?.restorationFailed != true { status = .stopped }
-    let next = pendingComposite
-    pendingComposite = nil
     let message = "\nFinished exit=\(result.exitCode); \(status.title).\n" +
       (report == nil ? "Missing terminal report: outcome and service restoration UNCONFIRMED; no success claimed.\n" : "") +
       (loggingFailed ? "Audit persistence failed during execution; cancellation requested.\n" : "")
-    let persisted = finish(runID: runID, status: status, exitCode: result.exitCode, message: message)
-    // A Dry Run in a pair must NEVER advance the Apply cursor, nor consume its frozen snapshot.
-    if type == .dryRun, let next, !stopped, !loggingFailed, persisted,
-       result.exitCode == 0, report?.permitsApply == true {
-      _ = startRun(type: next.target, trigger: next.trigger, configuration: next.configuration)
-    } else if next == nil, persisted, let images = report?.images, images.cursorCanAdvance,
-              images.mode == configuration.imageMode,
-              images.mode != "online-apply" || result.exitCode == 0 {
-      // Nonzero online exits NEVER advance progress, even if a report claims otherwise. Preview progress stays separate.
-      cursors[configuration.sweepKey] = images.nextAfterID ?? ""
-      defaults.set(cursors, forKey: Self.cursorsKey)
-    }
+    _ = finish(runID: runID, status: status, exitCode: result.exitCode, message: message)
   }
 
   func stopRun() {
-    guard let runID = activeRunID else { return }
+    guard let runID = activeRunID, !isStopping else { return }
+    isStopping = true
     stoppedRunIDs.insert(runID)
-    pendingComposite = nil
     let offline = runs.first { $0.id == runID }?.runType == .vacuum
     append(offline ? "Stop requested; waiting for remote child termination and Vacuum service restoration. Do not force-quit CC.\n" :
       "Stop requested; waiting for remote child termination; online, Brain not stopped. Do not force-quit CC.\n", to: runID)
@@ -226,6 +210,8 @@ final class DBMaintenanceStore: ObservableObject {
   func stopForAppTermination() async {
     scheduler?.invalidate()
     scheduler = nil
+    if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+    wakeObserver = nil
     guard activeRunID != nil else { return }
     stopRun()
     // The transport has a bounded cancellation wait and reports unconfirmed restoration on timeout.
@@ -235,7 +221,7 @@ final class DBMaintenanceStore: ObservableObject {
 
   func updateSchedule(isEnabled: Bool? = nil, intervalMinutes: Int? = nil, retentionDays: Int? = nil) {
     let next = DBMaintenanceScheduleSettings(isEnabled: isEnabled ?? schedule.isEnabled,
-      intervalMinutes: min(max(intervalMinutes ?? schedule.intervalMinutes, 60), 1440),
+      intervalMinutes: 1440,
       retentionDays: min(max(retentionDays ?? schedule.retentionDays, 1), 365))
     defaults.set(next.isEnabled, forKey: Self.scheduleEnabledKey)
     defaults.set(next.intervalMinutes, forKey: Self.scheduleIntervalMinutesKey)
@@ -243,7 +229,7 @@ final class DBMaintenanceStore: ObservableObject {
     schedule = next
   }
 
-  /// Explicit post-migration image disabling is preserved; blank roots use the source default.
+  /// Validate before saving. Per-run configuration freezes the target and retention policy.
   func updateConfiguration(host: String, safety: DBMaintenanceSafetySettings) -> String? {
     let host = host.trimmingCharacters(in: .whitespacesAndNewlines)
     var safety = safety
@@ -269,12 +255,6 @@ final class DBMaintenanceStore: ObservableObject {
     runs.first { $0.id == runID }?.log ?? ""
   }
 
-  var imageProgressLabel: String {
-    let cursor = configuration().imageAfterID
-    return cursor.isEmpty ? "Next image sweep starts at the beginning (max 300 rows/run)." :
-      "Image sweep incomplete; next run resumes after \(cursor) (max 300 rows/run)."
-  }
-
   var nextRunCountdownLabel: String {
     guard let next = schedule.nextAutomaticRunDate(now: Date(), lastRunDate: lastSuccessfulRunDate,
                                                   lastAttemptDate: lastAutomaticRunDate) else { return "Automatic maintenance off" }
@@ -291,7 +271,6 @@ final class DBMaintenanceStore: ObservableObject {
     runs[index].log.append(text)
     if !persistRun(runs[index]) {
       loggingFailedRunIDs.insert(runID)
-      pendingComposite = nil
       if let process = activeProcess, process.isRunning { process.terminate() }
     }
   }
@@ -304,6 +283,7 @@ final class DBMaintenanceStore: ObservableObject {
     runs[index].finishedAt = Date()
     runs[index].log.append(message)
     activeRunID = nil
+    isStopping = false
     activeProcess = nil
     stoppedRunIDs.remove(runID)
     loggingFailedRunIDs.remove(runID)
@@ -359,7 +339,7 @@ final class DBMaintenanceStore: ObservableObject {
   private static func loadSchedule(defaults: UserDefaults) -> DBMaintenanceScheduleSettings {
     DBMaintenanceScheduleSettings(
       isEnabled: defaults.object(forKey: scheduleEnabledKey) as? Bool ?? true,
-      intervalMinutes: min(max(defaults.object(forKey: scheduleIntervalMinutesKey) as? Int ?? 1440, 60), 1440),
+      intervalMinutes: 1440,
       retentionDays: min(max(defaults.object(forKey: retentionDaysKey) as? Int ?? 10, 1), 365))
   }
 
@@ -390,5 +370,4 @@ final class DBMaintenanceStore: ObservableObject {
   private static let lastAutomaticAttemptDateKey = "dbMaintenance.lastAutomaticAttemptDate"
   private static let legacySafetyKey = "dbMaintenance.safety.v1"
   private static let safetyKey = "dbMaintenance.safety.v2"
-  private static let cursorsKey = "dbMaintenance.imageSweepCursors.v2"
 }

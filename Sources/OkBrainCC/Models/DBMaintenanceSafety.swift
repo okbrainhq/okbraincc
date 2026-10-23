@@ -2,7 +2,7 @@ import Foundation
 
 struct DBMaintenanceSafetySettings: Codable, Hashable {
   var database = "/var/www/brain/brain.db"
-  // Legacy decoding stays truthful for persisted audits. The Store owns v2 defaults/migration.
+  // Legacy decoding stays truthful for persisted audits. The Store owns defaults/migration.
   static let defaultUploadsDirectory = "/var/www/brain-data/uploads"
   var uploadsDirectory = ""
   var writerServices = "brain"
@@ -35,11 +35,11 @@ struct DBMaintenanceSafetySettings: Codable, Hashable {
   }
 }
 
-/// Frozen once at the start of a Dry Run → Apply/Vacuum pair, including its cursor.
+/// Frozen once per invocation. Legacy cursor fields remain for decoding old audit records.
 struct DBMaintenanceConfiguration: Codable, Hashable {
   let remoteHost: String
   let retentionDays: Int
-  let safety: DBMaintenanceSafetySettings
+  var safety: DBMaintenanceSafetySettings
   var imageAfterID: String = ""
   // Nil on old runs means the historical preview/offline policy, never the new online policy.
   var imagePolicyVersion: Int? = nil
@@ -47,7 +47,7 @@ struct DBMaintenanceConfiguration: Codable, Hashable {
   var scheduleEnabled: Bool? = nil
 
   var imageMode: String {
-    safety.deleteImages ? (imagePolicyVersion == 2 ? "online-apply" : "apply") : "preview"
+    safety.deleteImages ? ((imagePolicyVersion ?? 0) >= 2 ? "online-apply" : "apply") : "preview"
   }
 
   var sweepKey: String {
@@ -127,6 +127,9 @@ struct DBMaintenanceReport: Codable, Hashable {
   let restorationFailed: Bool
   let partial: Bool
   let error: String?
+  var historyCounts: [String: DBMaintenanceHistoryCount]? = nil
+  var databaseCheck: String? = nil
+  var compaction: String? = nil
 
   static func parse(_ output: String) -> Self? {
     guard let line = output.components(separatedBy: "\n").last(where: { $0.hasPrefix("CC_RESULT ") }),
@@ -153,4 +156,9 @@ struct DBMaintenanceReport: Codable, Hashable {
     ["success", "warning", "incomplete"].contains(outcome) &&
       history == "dry_run_zero_deletions" && !partial && !restorationFailed
   }
+}
+
+struct DBMaintenanceHistoryCount: Codable, Hashable {
+  let candidates: Int
+  let deleted: Int
 }
