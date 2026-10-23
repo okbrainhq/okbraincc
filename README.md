@@ -105,9 +105,11 @@ After changing model rows, restart the local server so `/v1/models` and API clie
 
 ## DB Maintenance
 
-The existing Dry Run → Apply timer cleans **tool execution history and eligible agent images online**, without service checks or stopping Brain. Source defaults are every **24 hours**, older than **10 days**; custom schedules remain intact. New installs and legacy preview-only settings enable images automatically, with no extra prompt. Blank uploads paths use `/var/www/brain-data/uploads`; custom roots and later explicit disabling are preserved. **Vacuum alone remains manual/offline.**
+Backup-style run history, live logs, status and duration, with only **Settings**, **Start Manually / Stop**, and **Vacuum / Stop**. Settings contains the **SSH hostname**, **daily on/off**, and **retention days** (default **10**). Daily maintenance checks the DB, expires Code Project tool logs/images and web-search tool logs, optimizes, and checkpoints online. **All chat text is retained permanently.** Full Vacuum is manual only, with one downtime confirmation.
 
-See [DB Maintenance policy, safety and logging guide](docs/db-maintenance.md). **The counterpart Brain image CLI must support `--apply --online` and the provenance schema.** Online history Apply uses `--no-checkpoint`; online images require WAL and Python close-checkpoint control. Incompatible backends fail closed, never fall back offline. Persistent reports distinguish candidates, confirmed removals, unconfirmed changes and protection reasons. Every nonzero online exit keeps the saved sweep cursor unchanged for retry; conversations/messages, user uploads and repository files stay protected.
+The retention engine is bundled with CC, so no separate Brain cleanup-script deployment is needed. It sweeps the complete eligible image inventory, handles attributable user/legacy project images, and no longer lets unrelated idle jobs block every image. Pins, non-project references and unproven ownership remain protected. Keep CC running: missed daily runs catch up on launch/wake, and failed runs retry hourly. Existing disabled schedules and custom paths are preserved.
+
+See the [DB Maintenance policy, safety and logging guide](docs/db-maintenance.md) for exact scope, concurrency protections, production findings and deployment requirements.
 
 Safe focused validation (no GUI launch, real SSH or CC process kills):
 
@@ -116,7 +118,7 @@ bash scripts/test-db-maintenance.sh
 swift build --disable-sandbox --cache-path .build/swiftpm-cache
 ```
 
-The full `scripts/test.sh` includes mock production launches and process-name kills; do not use it for fixture-only maintenance work.
+Use `bash scripts/test.sh --no-launch` for the complete maintenance, scheduler and dev/prod bundle checks without killing or launching apps. The default `scripts/test.sh` also performs mock app launches and process-name cleanup.
 
 ## Development vs Production
 

@@ -7,6 +7,13 @@ DEV_APP_NAME="${APP_BASENAME}-Dev"
 PROD_APP_NAME="$APP_BASENAME"
 SCHEDULER_TEST_DIR="$(mktemp -d)"
 MOCK_APP_STARTED="0"
+SKIP_LAUNCH="0"
+for arg in "$@"; do
+  case "$arg" in
+    --no-launch) SKIP_LAUNCH="1" ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
 TEST_HOME="$ROOT_DIR/.build/test-home"
 SWIFTPM_CACHE="$ROOT_DIR/.build/swiftpm-cache"
 SWIFTPM_FLAGS=(--disable-sandbox --cache-path "$SWIFTPM_CACHE")
@@ -52,6 +59,9 @@ verify_bundle() {
   cmp "$deploy_backup_agent_dir/backup-prodbox-sandbox.sh" "$backup_agent_dir/backup-prodbox-sandbox.sh"
   cmp "$deploy_backup_agent_dir/restore-prodbox.sh" "$backup_agent_dir/restore-prodbox.sh"
   cmp "$deploy_backup_agent_dir/restore-prodbox-sandbox.sh" "$backup_agent_dir/restore-prodbox-sandbox.sh"
+  for script in db-maintenance.py db-retention.py db-maintenance-dry-run.sh db-maintenance-apply.sh db-maintenance-vacuum.sh; do
+    cmp "$deploy_backup_agent_dir/$script" "$backup_agent_dir/$script"
+  done
   /usr/bin/plutil -lint "$info_plist" >/dev/null
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$info_plist")" = "$app_name"
   test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")" = "$bundle_id"
@@ -77,6 +87,9 @@ swiftc -module-cache-path "$CLANG_MODULE_CACHE_PATH" \
   -o "$SCHEDULER_TEST_DIR/verify_scheduler"
 "$SCHEDULER_TEST_DIR/verify_scheduler"
 
+section "DB maintenance verification"
+bash "$ROOT_DIR/scripts/test-db-maintenance.sh"
+
 section "Shell syntax checks"
 while IFS= read -r script; do
   bash -n "$script"
@@ -101,6 +114,7 @@ section "Prod app bundle build"
 section "Prod app bundle contents"
 verify_bundle "$PROD_APP_NAME" "com.okbraincc.app" "prod"
 
+if [ "$SKIP_LAUNCH" = "0" ]; then
 section "Mock dev app launch via run.sh"
 pkill -x "$DEV_APP_NAME" >/dev/null 2>&1 || true
 "$ROOT_DIR/scripts/run.sh" --mock-verify --dev
@@ -110,5 +124,7 @@ section "Mock prod app launch via run.sh"
 pkill -x "$PROD_APP_NAME" >/dev/null 2>&1 || true
 "$ROOT_DIR/scripts/run.sh" --mock-verify --prod
 MOCK_APP_STARTED="1"
+
+fi
 
 echo "Tests passed"

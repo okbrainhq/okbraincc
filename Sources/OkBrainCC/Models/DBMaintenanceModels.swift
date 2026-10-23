@@ -10,7 +10,7 @@ enum DBMaintenanceRunType: String, Codable, Hashable, CaseIterable {
     case .dryRun:
       "Dry Run"
     case .apply:
-      "Apply"
+      "Clean up"
     case .vacuum:
       "Vacuum"
     }
@@ -128,13 +128,13 @@ struct DBMaintenanceScheduleSettings: Hashable {
       return nil
     }
 
-    let interval = TimeInterval(max(intervalMinutes, 1) * 60)
-    let anchors = [lastRunDate, lastAttemptDate].compactMap { $0 }
-    guard let anchor = anchors.max() else {
-      return now
+    // Failed/incomplete work retries in one hour, instead of silently waiting another day.
+    // Dry Run/Vacuum are never passed in as a successful cleanup anchor by the Store.
+    if let lastAttemptDate, lastRunDate == nil || lastAttemptDate > lastRunDate! {
+      return lastAttemptDate.addingTimeInterval(3600)
     }
+    return lastRunDate?.addingTimeInterval(86400) ?? now
 
-    return anchor.addingTimeInterval(interval)
   }
 
   func shouldRunAutomatically(
